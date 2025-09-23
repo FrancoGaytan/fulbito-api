@@ -1,4 +1,4 @@
-import type { MatchDoc } from '../models/matches/match.model.js';
+import type { MatchDoc } from '../models/match.model.js';
 
 export function serializeMatch(m: MatchDoc) {
   return {

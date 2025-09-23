@@ -1,10 +1,18 @@
 import { Router } from 'express';
-import { GroupsController } from '../controllers/groups.controller.js';
-import { asyncHandler } from '../middlewares/async.js';
+import { requireAuth } from '../middlewares/auth.js';
+import { enforceOwnership } from '../middlewares/ownership.js';
+import { Group } from '../models/group.model.js';
+import * as ctrl from '../controllers/groups.controller.js';
 
-export const groupsRouter = Router();
+const router = Router();
 
-groupsRouter.get('/', asyncHandler(GroupsController.list));
-groupsRouter.post('/', asyncHandler(GroupsController.create));
-groupsRouter.post('/:groupId/players', asyncHandler(GroupsController.addPlayer));
-groupsRouter.get('/:groupId/players', asyncHandler(GroupsController.members));
+// Crear grupo
+router.post('/', requireAuth, ctrl.createGroup);
+
+// Listar grupos
+router.get('/', requireAuth, ctrl.listGroups);
+
+// Agregar player a un grupo
+router.post('/:id/players', requireAuth, enforceOwnership(Group, 'id'), ctrl.addPlayerToGroup);
+
+export default router;

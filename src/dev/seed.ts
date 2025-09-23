@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
-import { PlayerModel } from '../models/players/player.model.js';
-import { GroupModel } from '../models/groups/group.model.js';
+import { PlayerModel } from '../models/player.model.js';
+import { GroupModel } from '../models/group.model.js';
 
 const playersData = [
   {

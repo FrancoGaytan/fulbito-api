@@ -1,4 +1,4 @@
-import { Group } from '../models/groups/group.model.js';
+import { Group } from '../models/group.model.js';
 import { serializePlayer } from './player.view.js';
 
 export function serializeGroup(g: Group & { members?: any[] }) {

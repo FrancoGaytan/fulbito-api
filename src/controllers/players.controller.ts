@@ -1,37 +1,60 @@
 import { Request, Response } from 'express';
-import { z } from 'zod';
-import { PlayerModel } from '../models/players/player.model.js';
-import { serializePlayer } from '../views/player.view.js';
+import { Types } from 'mongoose';
+import { Player as PlayerModel } from '../models/player.model';
 
-const abilityKeys = [
-  'goalkeeper',
-  'running',
-  'passes',
-  'defense',
-  'power',
-  'scorer',
-  'positionalUnderstanding',
-] as const;
+export async function createPlayer(req: Request, res: Response) {
+  try {
+    const { name, abilities } = req.body as { name: string; abilities?: string[] };
+    if (!name) return res.status(400).json({ message: 'name requerido' });
 
-const createPlayerDto = z.object({
-  name: z.string().min(1),
-  abilities: z.array(
-    z.object({
-      key: z.enum(abilityKeys),
-      value: z.number().int().min(0).max(10),
-    })
-  ),
-});
+    const player = await PlayerModel.create({
+      name,
+      abilities: Array.isArray(abilities) ? abilities : [],
+      rating: 1000,
+      ratingHistory: [],
+      skillHistory: [],
+      owner: req.userId!, // <- del token
+    });
 
-export class PlayersController {
-  static async create(req: Request, res: Response) {
-    const data = createPlayerDto.parse(req.body);
-    const player = await PlayerModel.create(data);
-    res.status(201).json(serializePlayer(player));
+    return res.status(201).json(player);
+  } catch (err) {
+    return res.status(500).json({ message: 'Error creando jugador', error: (err as Error).message });
   }
+}
 
-  static async list(_req: Request, res: Response) {
-    const players = await PlayerModel.find().sort({ createdAt: -1 });
-    res.json(players.map(serializePlayer));
+export async function listPlayers(req: Request, res: Response) {
+  try {
+    const players = await PlayerModel.find({ owner: req.userId }).lean();
+    return res.json(players);
+  } catch (err) {
+    return res.status(500).json({ message: 'Error listando jugadores', error: (err as Error).message });
+  }
+}
+
+export async function updateAbilities(req: Request, res: Response) {
+  try {
+    // 1) Narrow de params
+    const { id } = req.params as { id?: string };
+    if (!id || !Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+
+    // 2) Narrow del body
+    const body = req.body as { abilities?: unknown };
+    if (!Array.isArray(body.abilities) || !body.abilities.every(a => typeof a === 'string')) {
+      return res.status(400).json({ message: 'abilities debe ser array de string' });
+    }
+    const abilities = body.abilities as string[];
+
+    // 3) La route ya usa enforceOwnership(Player) → el player es del user
+    const player = await PlayerModel.findById(id);
+    if (!player) return res.status(404).json({ message: 'Jugador no encontrado' });
+
+    player.abilities = abilities;
+    await player.save();
+
+    return res.json(player);
+  } catch (err) {
+    return res.status(500).json({ message: 'Error actualizando habilidades', error: (err as Error).message });
   }
 }

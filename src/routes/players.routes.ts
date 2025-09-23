@@ -1,8 +1,18 @@
 import { Router } from 'express';
-import { asyncHandler } from '../middlewares/async.js';
-import { PlayersController } from '../controllers/players.controller.js';
+import { requireAuth } from '../middlewares/auth.js';
+import { enforceOwnership } from '../middlewares/ownership.js';
+import { Player } from '../models/player.model.js';
+import * as ctrl from '../controllers/players.controller.js';
 
-export const playersRouter = Router();
+const router = Router();
 
-playersRouter.get('/', asyncHandler(PlayersController.list));
-playersRouter.post('/', asyncHandler(PlayersController.create));
+// Crear player
+router.post('/', requireAuth, ctrl.createPlayer);
+
+// Listar players
+router.get('/', requireAuth, ctrl.listPlayers);
+
+// Actualizar abilities de un player
+router.patch('/:id/abilities', requireAuth, enforceOwnership(Player, 'id'), ctrl.updateAbilities);
+
+export default router;

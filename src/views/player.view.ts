@@ -1,4 +1,4 @@
-import type { PlayerDoc } from '../models/players/player.model.js';
+import type { PlayerDoc } from '../models/player.model.js';
 
 export function serializePlayer(p: PlayerDoc) {
   return {

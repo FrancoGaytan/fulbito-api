@@ -1,127 +1,289 @@
+import { Request, Response } from 'express';
 import { Types } from 'mongoose';
-import { MatchModel, IMatchTeam, IMatchFeedback } from '../models/matches/match.model.js';
-import { shuffle } from '../utils/shuffle.js';
+import { Match as MatchModel } from '../models/match.model';
+import { Group as GroupModel } from '../models/group.model';
+import { Player as PlayerModel } from '../models/player.model';
 
-export class MatchesController {
-  // POST /api/matches
-  static async create(req: any, res: any) {
-    const { groupId, participants } = req.body as {
-      groupId: string;
-      participants: string[];
-    };
+/** Utilidad simple de balanceo por rating para MVP */
+function generateBalancedTeams(
+  participants: { _id: string; rating: number }[],
+) {
+  const sorted = [...participants].sort((a, b) => b.rating - a.rating);
+  const teamA: string[] = [];
+  const teamB: string[] = [];
+  let sumA = 0,
+    sumB = 0;
+  for (const p of sorted) {
+    if (sumA <= sumB) {
+      teamA.push(p._id);
+      sumA += p.rating;
+    } else {
+      teamB.push(p._id);
+      sumB += p.rating;
+    }
+  }
+  return { teamA, teamB };
+}
+
+export async function createMatch(req: Request, res: Response) {
+  try {
+    // Narrow del body
+    const body = req.body as { groupId?: string; participants?: unknown };
+    const groupId = body.groupId;
+    if (!groupId || !Types.ObjectId.isValid(groupId)) {
+      return res.status(400).json({ message: 'groupId inválido' });
+    }
+
+    // participants opcional pero si viene debe ser string[]
+    const partIds: string[] =
+      Array.isArray(body.participants) &&
+      body.participants.every((p) => typeof p === 'string')
+        ? (body.participants as string[])
+        : [];
+
+    // Validar owner del grupo
+    const group = await GroupModel.findById(groupId).select('owner');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+    if (group.owner.toString() !== req.userId) {
+      return res.status(403).json({ message: 'No podés usar ese grupo' });
+    }
+
+    // Si hay participantes, deben ser todos del mismo owner
+    if (partIds.length) {
+      const players = await PlayerModel.find({ _id: { $in: partIds } }).select(
+        'owner',
+      );
+      const allYours =
+        players.length === partIds.length &&
+        players.every((p) => p.owner.toString() === req.userId);
+      if (!allYours)
+        return res
+          .status(403)
+          .json({ message: 'Todos los participantes deben ser tuyos' });
+    }
 
     const match = await MatchModel.create({
-      group: new Types.ObjectId(groupId),
-      participants: (participants ?? []).map((id) => new Types.ObjectId(id)),
-      status: 'draft',
+      groupId: new Types.ObjectId(groupId),
+      participants: partIds.map((id) => new Types.ObjectId(id)),
+      teams: [],
+      feedback: [],
+      result: undefined,
+      status: 'pending',
+      owner: req.userId!, // del token
     });
 
-    res.status(201).json({ ok: true, match });
+    return res.status(201).json(match);
+  } catch (err) {
+    return res
+      .status(500)
+      .json({ message: 'Error creando match', error: (err as Error).message });
   }
+}
 
-  // GET /api/matches/group/:groupId
-  static async listByGroup(req: any, res: any) {
-    const { groupId } = req.params;
-    const matches = await MatchModel.find({ group: groupId })
-      .sort({ createdAt: -1 })
-      .lean();
-    res.json({ ok: true, matches });
-  }
-
-  // POST /api/matches/:matchId/participants
-  static async addParticipant(req: any, res: any) {
-    const { matchId } = req.params;
-    const { playerId } = req.body as { playerId: string };
-
-    const match = await MatchModel.findById(matchId);
-    if (!match) return res.status(404).json({ ok: false, error: 'match_not_found' });
-
-    const pid = new Types.ObjectId(playerId);
-    if (!match.participants.some((p) => p.equals(pid))) {
-      match.participants.push(pid);
+export async function listMatchesByGroup(req: Request, res: Response) {
+  try {
+    const { id: groupId } = req.params as { id?: string };
+    if (!groupId || !Types.ObjectId.isValid(groupId)) {
+      return res.status(400).json({ message: 'Id inválido' });
     }
-    await match.save();
 
-    res.status(201).json({ ok: true, participants: match.participants });
+    const group = await GroupModel.findById(groupId).select('owner');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+    if (group.owner.toString() !== req.userId)
+      return res.status(403).json({ message: 'Sin permiso' });
+
+    const matches = await MatchModel.find({
+      groupId,
+      owner: req.userId,
+    }).lean();
+    return res.json(matches);
+  } catch (err) {
+    return res
+      .status(500)
+      .json({
+        message: 'Error listando matches',
+        error: (err as Error).message,
+      });
   }
+}
 
-  // POST /api/matches/:matchId/generate-teams
-  static async generateTeams(req: any, res: any) {
-    const { matchId } = req.params;
+export async function addParticipant(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    const { playerId } = req.body as { playerId?: string };
 
-    const match = await MatchModel.findById(matchId);
-    if (!match) return res.status(404).json({ ok: false, error: 'match_not_found' });
+    if (
+      !matchId ||
+      !Types.ObjectId.isValid(matchId) ||
+      !playerId ||
+      !Types.ObjectId.isValid(playerId)
+    ) {
+      return res.status(400).json({ message: 'Ids inválidos' });
+    }
 
-    const ids = match.participants.map((p) => p.toString());
-    const mixed = shuffle(ids);
-    const mid = Math.ceil(mixed.length / 2);
-    const A = mixed.slice(0, mid).map((id) => new Types.ObjectId(id));
-    const B = mixed.slice(mid).map((id) => new Types.ObjectId(id));
+    // La ruta usa enforceOwnership(Match) -> el match es del user
+    const player = await PlayerModel.findById(playerId).select('owner');
+    if (!player)
+      return res.status(404).json({ message: 'Jugador no encontrado' });
+    if (player.owner.toString() !== req.userId) {
+      return res.status(403).json({ message: 'El jugador no te pertenece' });
+    }
 
-    // TypeScript + Mongoose: casteamos al tipo del subdocumento
-    const teams: IMatchTeam[] = [
-      { name: 'A', players: A, score: 0 },
-      { name: 'B', players: B, score: 0 },
+    const updated = await MatchModel.findByIdAndUpdate(
+      matchId,
+      { $addToSet: { participants: new Types.ObjectId(playerId) } },
+      { new: true },
+    );
+
+    if (!updated)
+      return res.status(404).json({ message: 'Match no encontrado' });
+    return res.json(updated);
+  } catch (err) {
+    return res
+      .status(500)
+      .json({
+        message: 'Error agregando participante',
+        error: (err as Error).message,
+      });
+  }
+}
+
+export async function generateTeams(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+
+    // Ruta usa enforceOwnership(Match)
+    const match = await MatchModel.findById(matchId)
+      .populate('participants', 'rating')
+      .select('participants teams status');
+
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    const participantsRatings = (
+      match.participants as unknown as { _id: Types.ObjectId; rating: number }[]
+    ).map((p) => ({
+      _id: p._id.toString(),
+      rating: typeof p.rating === 'number' ? p.rating : 1000,
+    }));
+
+    const { teamA, teamB } = generateBalancedTeams(participantsRatings);
+    match.teams = [
+      {
+        name: 'A',
+        players: teamA.map((id) => new Types.ObjectId(id)),
+        score: 0,
+      },
+      {
+        name: 'B',
+        players: teamB.map((id) => new Types.ObjectId(id)),
+        score: 0,
+      },
     ];
-    match.set('teams', teams as unknown as IMatchTeam[]); // casting seguro aquí
-
-    match.status = 'generated';
     await match.save();
-
-    res.json({ ok: true, teams: match.teams });
+    return res.json({ teams: match.teams });
+  } catch (err) {
+    return res
+      .status(500)
+      .json({
+        message: 'Error generando equipos',
+        error: (err as Error).message,
+      });
   }
+}
 
-  // POST /api/matches/:matchId/feedback
-  static async feedback(req: any, res: any) {
-    const { matchId } = req.params;
-    const body = req.body as { playerId: string; vote: -1 | 0 | 1; note?: string };
+export async function addFeedback(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    const body = req.body as {
+      playerId?: string;
+      vote?: unknown;
+      note?: string;
+    };
 
-    const match = await MatchModel.findById(matchId);
-    if (!match) return res.status(404).json({ ok: false, error: 'match_not_found' });
-
-    const pid = new Types.ObjectId(body.playerId);
-    const idx = match.feedback.findIndex((f) => f.player.equals(pid));
-
-    if (idx >= 0) {
-      // mantenemos el ObjectId original, solo actualizamos campos mutables
-      match.feedback[idx] = {
-        player: match.feedback[idx]!.player,
-        vote: body.vote,
-        note: body.note ?? null,
-      } as unknown as IMatchFeedback;
-    } else {
-      match.feedback.push({
-        player: pid,
-        vote: body.vote,
-        note: body.note ?? null,
-      } as unknown as IMatchFeedback);
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+    if (!body.playerId || !Types.ObjectId.isValid(body.playerId)) {
+      return res.status(400).json({ message: 'playerId inválido' });
+    }
+    const validVotes = ['up', 'neutral', 'down'] as const;
+    if (
+      typeof body.vote !== 'string' ||
+      !validVotes.includes(body.vote as any)
+    ) {
+      return res.status(400).json({ message: 'vote inválido' });
     }
 
+    const match = await MatchModel.findById(matchId).select(
+      'participants feedback',
+    );
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    const isParticipant = match.participants.find(
+      (p) => p.toString() === body.playerId,
+    );
+    if (!isParticipant)
+      return res
+        .status(400)
+        .json({ message: 'El jugador no participa en el match' });
+
+    match.feedback.push({
+      playerId: new Types.ObjectId(body.playerId),
+      vote: body.vote,
+      note: body.note,
+      by: new Types.ObjectId(req.userId),
+      at: new Date(),
+    } as any);
+
     await match.save();
-    res.status(201).json({ ok: true, feedback: match.feedback });
+    return res.json({ message: 'Feedback registrado' });
+  } catch (err) {
+    return res
+      .status(500)
+      .json({
+        message: 'Error registrando feedback',
+        error: (err as Error).message,
+      });
   }
+}
 
-  // POST /api/matches/:matchId/finalize
-  static async finalize(req: any, res: any) {
-    const { matchId } = req.params;
-    const { scoreA, scoreB } = req.body as { scoreA: number; scoreB: number };
+export async function finalizeMatch(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    const body = req.body as { scoreA?: unknown; scoreB?: unknown };
 
-    const match = await MatchModel.findById(matchId);
-    if (!match) return res.status(404).json({ ok: false, error: 'match_not_found' });
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+    if (typeof body.scoreA !== 'number' || typeof body.scoreB !== 'number') {
+      return res.status(400).json({ message: 'Scores inválidos' });
+    }
+
+    const match = await MatchModel.findById(matchId).select(
+      'teams status result',
+    );
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
 
     match.status = 'finalized';
-    const winner = scoreA === scoreB ? 'draw' : scoreA > scoreB ? 'A' : 'B';
-    match.result = { winner, scoreA, scoreB };
+    match.result = {
+      scoreA: body.scoreA,
+      scoreB: body.scoreB,
+      finalizedAt: new Date(),
+    } as any;
 
-    // también reflejamos el score en los equipos si existen
-    if (Array.isArray(match.teams) && match.teams.length === 2) {
-      match.teams = [
-        { ...match.teams[0]!, score: scoreA },
-        { ...match.teams[1]!, score: scoreB },
-      ] as unknown as IMatchTeam[];
-    }
+    // (Aquí podrías actualizar ELO si querés)
 
     await match.save();
-    res.json({ ok: true, result: match.result });
+    return res.json(match);
+  } catch (err) {
+    return res
+      .status(500)
+      .json({
+        message: 'Error finalizando match',
+        error: (err as Error).message,
+      });
   }
 }
