@@ -1,60 +1,46 @@
-import { Request, Response } from 'express';
-import { Types } from 'mongoose';
-import { Player as PlayerModel } from '../models/player.model.js';
+// src/controllers/players.controller.ts
+import { Request, Response } from 'express'
+import { isValidObjectId } from 'mongoose'
+import { Player } from '../models/player.model'
+import { normalizeAbilitiesInput } from '../utils/abilities'
 
+// Crear jugador (acepta array viejo o objeto nuevo)
 export async function createPlayer(req: Request, res: Response) {
   try {
-    const { name, abilities } = req.body as { name: string; abilities?: string[] };
-    if (!name) return res.status(400).json({ message: 'name requerido' });
+    const { name, nickname, abilities } = req.body
+    if (!name) return res.status(400).json({ message: 'name is required' })
 
-    const player = await PlayerModel.create({
+    const normalized = normalizeAbilitiesInput(abilities) // { key: score } | undefined
+    const created = await Player.create({
       name,
-      abilities: Array.isArray(abilities) ? abilities : [],
-      rating: 1000,
-      ratingHistory: [],
-      skillHistory: [],
-      owner: req.userId!, // <- del token
-    });
+      nickname,
+      abilities: normalized, // Mongoose guarda como Map
+    })
 
-    return res.status(201).json(player);
+    return res.status(201).json(created) // toJSON ya debe tener flattenMaps
   } catch (err) {
-    return res.status(500).json({ message: 'Error creando jugador', error: (err as Error).message });
+    return res.status(500).json({ message: 'Error creando jugador', error: (err as Error).message })
   }
 }
 
-export async function listPlayers(req: Request, res: Response) {
-  try {
-    const players = await PlayerModel.find({ owner: req.userId }).lean();
-    return res.json(players);
-  } catch (err) {
-    return res.status(500).json({ message: 'Error listando jugadores', error: (err as Error).message });
-  }
-}
-
+// PATCH /players/:id/abilities
 export async function updateAbilities(req: Request, res: Response) {
   try {
-    // 1) Narrow de params
-    const { id } = req.params as { id?: string };
-    if (!id || !Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Id inválido' });
-    }
+    const { id } = req.params
+    if (!isValidObjectId(id)) return res.status(400).json({ message: 'Id inválido' })
 
-    // 2) Narrow del body
-    const body = req.body as { abilities?: unknown };
-    if (!Array.isArray(body.abilities) || !body.abilities.every(a => typeof a === 'string')) {
-      return res.status(400).json({ message: 'abilities debe ser array de string' });
-    }
-    const abilities = body.abilities as string[];
+    const player = await Player.findById(id)
+    if (!player) return res.status(404).json({ message: 'Jugador no encontrado' })
 
-    // 3) La route ya usa enforceOwnership(Player) → el player es del user
-    const player = await PlayerModel.findById(id);
-    if (!player) return res.status(404).json({ message: 'Jugador no encontrado' });
+    // ✅ acepta { defense: 8, passes: 7 } o ['defense', 'passes'] y lo mapea
+    const normalized = normalizeAbilitiesInput(req.body?.abilities)
 
-    player.abilities = abilities;
-    await player.save();
+    // 👉 Usá set() para evitar el error de TS (Map vs objeto)
+    player.set('abilities', normalized)  // undefined = las borra
+    await player.save()
 
-    return res.json(player);
+    return res.json(player)
   } catch (err) {
-    return res.status(500).json({ message: 'Error actualizando habilidades', error: (err as Error).message });
+    return res.status(500).json({ message: 'Error actualizando habilidades', error: (err as Error).message })
   }
 }

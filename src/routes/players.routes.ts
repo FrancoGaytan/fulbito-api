@@ -1,18 +1,44 @@
-import { Router } from 'express';
-import { requireAuth } from '../middlewares/auth.js';
-import { enforceOwnership } from '../middlewares/ownership.js';
-import { Player } from '../models/player.model.js';
-import * as ctrl from '../controllers/players.controller.js';
+import { Router } from 'express'
+import { Player } from '../models/player.model'
+import { normalizeAbilitiesInput } from '../utils/abilities'
 
-const router = Router();
+const router = Router()
 
-// Crear player
-router.post('/', requireAuth, ctrl.createPlayer);
+router.get('/players', async (_req, res, next) => {
+  try {
+    const list = await Player.find().lean({ getters: true })
+    return res.json(list)
+  } catch (e) {
+    next(e)
+  }
+})
 
-// Listar players
-router.get('/', requireAuth, ctrl.listPlayers);
+router.post('/players', async (req, res, next) => {
+  try {
+    const { name, nickname, abilities } = req.body
+    if (!name) return res.status(400).json({ message: 'name is required' })
 
-// Actualizar abilities de un player
-router.patch('/:id/abilities', requireAuth, enforceOwnership(Player, 'id'), ctrl.updateAbilities);
+    const normalized = normalizeAbilitiesInput(abilities)
+    const created = await Player.create({ name, nickname, abilities: normalized })
+    return res.status(201).json(created.toJSON())
+  } catch (e) {
+    next(e)
+  }
+})
 
-export default router;
+router.patch('/players/:id/abilities', async (req, res, next) => {
+  try {
+    const normalized = normalizeAbilitiesInput(req.body?.abilities)
+    const updated = await Player.findByIdAndUpdate(
+      req.params.id,
+      { abilities: normalized },
+      { new: true, runValidators: true }
+    ).lean({ getters: true })
+    if (!updated) return res.status(404).json({ message: 'player not found' })
+    return res.json(updated)
+  } catch (e) {
+    next(e)
+  }
+})
+
+export default router

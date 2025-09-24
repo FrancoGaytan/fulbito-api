@@ -19,7 +19,7 @@ export const buildApp = () => {
 
   // Rutas
   app.use('/api/groups', groupsRouter);
-  app.use('/api/players', playersRouter);
+  app.use('/api', playersRouter)
   app.use('/api/matches', matchesRouter);
   app.use('/api/auth', authRoutes);
 

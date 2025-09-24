@@ -278,9 +278,9 @@ PORT=3000
 - `POST /api/auth/login` → `{ email, password }` → `{ token }`
 
 ### Players
-- `POST /api/players` → `{ name, abilities[] }`
+- `POST /api/players` → `{ name, nickname?, abilities: { defense: 8, passes: 7, ... } }`
 - `GET /api/players`
-- `PATCH /api/players/:id/abilities` → `{ abilities[] }`
+- `PATCH /api/players/:id/abilities` → `{ abilities: { scorer: 9, running: 6 } }`
 
 ### Groups
 - `POST /api/groups` → `{ name }`

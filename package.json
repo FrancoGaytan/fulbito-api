@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "lint": "eslint . --ext .ts",
-    "format": "prettier -w ."
+    "format": "prettier -w .",
+    "migrate:abilities": "ts-node scripts/migrate-abilities.ts"
   },
   "keywords": [],
   "author": "",
