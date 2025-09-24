@@ -27,48 +27,47 @@ function generateBalancedTeams(
 export async function createMatch(req: Request, res: Response) {
   try {
     // Narrow del body
-    const body = req.body as { groupId?: string; participants?: unknown };
+    const body = req.body as { groupId?: string; participants?: unknown; date?: unknown };
     const groupId = body.groupId;
     if (!groupId || !Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ message: 'groupId inválido' });
     }
 
-    // participants opcional pero si viene debe ser string[]
+    // participants opcional pero si viene debe ser string[] y ObjectId
     const partIds: string[] =
-      Array.isArray(body.participants) &&
-      body.participants.every((p) => typeof p === 'string')
+      Array.isArray(body.participants) && body.participants.every((p) => typeof p === 'string')
         ? (body.participants as string[])
         : [];
+    const partIdsClean = [...new Set(partIds.map(String))]; // únicos
 
-    // Validar owner del grupo
-    const group = await GroupModel.findById(groupId).select('owner');
+    // Validar que el grupo exista y sea del usuario
+    const group = await GroupModel.findById(groupId).select('owner members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
     if (group.owner.toString() !== req.userId) {
       return res.status(403).json({ message: 'No podés usar ese grupo' });
     }
 
-    // Si hay participantes, deben ser todos del mismo owner
-    if (partIds.length) {
-      const players = await PlayerModel.find({ _id: { $in: partIds } }).select(
-        'owner',
-      );
-      const allYours =
-        players.length === partIds.length &&
-        players.every((p) => p.owner.toString() === req.userId);
-      if (!allYours)
-        return res
-          .status(403)
-          .json({ message: 'Todos los participantes deben ser tuyos' });
+    // Si hay participantes, deben pertenecer al grupo
+    if (partIdsClean.length) {
+      const setMembers = new Set((group.members ?? []).map((m) => m.toString()));
+      const outside = partIdsClean.filter((id) => !Types.ObjectId.isValid(id) || !setMembers.has(id));
+      if (outside.length) {
+        return res.status(400).json({
+          message: 'Todos los participantes deben pertenecer al grupo',
+          fueraDelGrupo: outside,
+        });
+      }
     }
 
     const match = await MatchModel.create({
       groupId: new Types.ObjectId(groupId),
-      participants: partIds.map((id) => new Types.ObjectId(id)),
+      participants: partIdsClean.map((id) => new Types.ObjectId(id)),
       teams: [],
       feedback: [],
       result: undefined,
       status: 'pending',
       owner: req.userId!, // del token
+      ...(body.date ? { date: new Date(String(body.date)) } : {}),
     });
 
     return res.status(201).json(match);
@@ -121,11 +120,16 @@ export async function addParticipant(req: Request, res: Response) {
     }
 
     // La ruta usa enforceOwnership(Match) -> el match es del user
-    const player = await PlayerModel.findById(playerId).select('owner');
-    if (!player)
-      return res.status(404).json({ message: 'Jugador no encontrado' });
-    if (player.owner.toString() !== req.userId) {
-      return res.status(403).json({ message: 'El jugador no te pertenece' });
+    const match = await MatchModel.findById(matchId).select('groupId');
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    // Validar que el player pertenezca al grupo del match
+    const group = await GroupModel.findById(match.groupId).select('members');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+
+    const isMember = (group.members ?? []).some((m) => m.toString() === playerId);
+    if (!isMember) {
+      return res.status(400).json({ message: 'El jugador no pertenece al grupo del match' });
     }
 
     const updated = await MatchModel.findByIdAndUpdate(

@@ -1,18 +1,21 @@
-import { Router } from 'express';
-import { requireAuth } from '../middlewares/auth.js';
-import { enforceOwnership } from '../middlewares/ownership.js';
-import { Group } from '../models/group.model.js';
-import * as ctrl from '../controllers/groups.controller.js';
+// src/routes/groups.routes.ts
+import { Router } from 'express'
+import {
+  createGroup,
+  listGroups,
+  joinGroup,
+  addPlayersToGroup,
+  addPlayerToGroup,
+} from '../controllers/groups.controller.js'
+import { requireAuth } from '../middlewares/auth.js'
 
-const router = Router();
+const router = Router()
 
-// Crear grupo
-router.post('/', requireAuth, ctrl.createGroup);
+router.get('/groups', requireAuth, listGroups)
+router.post('/groups', requireAuth, createGroup)
 
-// Listar grupos
-router.get('/', requireAuth, ctrl.listGroups);
+router.post('/groups/:id/join', requireAuth, joinGroup)
+router.post('/groups/:id/players', requireAuth, addPlayersToGroup) // bulk
+router.post('/groups/:id/player', requireAuth, addPlayerToGroup)   // single (compat)
 
-// Agregar player a un grupo
-router.post('/:id/players', requireAuth, enforceOwnership(Group, 'id'), ctrl.addPlayerToGroup);
-
-export default router;
+export default router

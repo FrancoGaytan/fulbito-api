@@ -18,7 +18,7 @@ export const buildApp = () => {
   app.get('/health', (_req, res) => res.json({ ok: true }));
 
   // Rutas
-  app.use('/api/groups', groupsRouter);
+  app.use('/api', groupsRouter)
   app.use('/api', playersRouter)
   app.use('/api/matches', matchesRouter);
   app.use('/api/auth', authRoutes);
