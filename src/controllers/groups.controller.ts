@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { Types } from 'mongoose';
-import { Group } from '../models/group.model';
-import { Player } from '../models/player.model';
+import { Group } from '../models/group.model.js';
+import { Player } from '../models/player.model.js';
 
 export async function createGroup(req: Request, res: Response) {
   try {

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { Types } from 'mongoose';
-import { Player as PlayerModel } from '../models/player.model';
+import { Player as PlayerModel } from '../models/player.model.js';
 
 export async function createPlayer(req: Request, res: Response) {
   try {

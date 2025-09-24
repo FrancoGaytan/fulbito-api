@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { Types } from 'mongoose';
-import { Match as MatchModel } from '../models/match.model';
-import { Group as GroupModel } from '../models/group.model';
-import { Player as PlayerModel } from '../models/player.model';
+import { Match as MatchModel } from '../models/match.model.js';
+import { Group as GroupModel } from '../models/group.model.js';
+import { Player as PlayerModel } from '../models/player.model.js';
 
 function generateBalancedTeams(
   participants: { _id: string; rating: number }[],
