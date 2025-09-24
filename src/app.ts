@@ -23,7 +23,6 @@ export const buildApp = () => {
   app.use('/api/matches', matchesRouter);
   app.use('/api/auth', authRoutes);
 
-  // Manejador de errores global (al final de todo)
   app.use(errorHandler);
 
   return app;

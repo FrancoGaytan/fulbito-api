@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { runSeed } from '../dev/seed.js';
+import { runSeedByOwnerId } from '../dev/seed.js';
 
 export const devRouter = Router();
 
@@ -14,7 +14,7 @@ devRouter.post('/seed', async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid dev token' });
     }
 
-    const summary = await runSeed();
+    const summary = await runSeedByOwnerId(req.userId!, { wipe: true });
     res.status(201).json({ ok: true, summary });
   } catch (e) {
     next(e);
