@@ -1,4 +1,3 @@
-// util chico y tipado: baraja un array sin modificar el original
 export function shuffle<T>(arr: readonly T[]): T[] {
   const a: T[] = [...arr];
   for (let i = a.length - 1; i > 0; i--) {

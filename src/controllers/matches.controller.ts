@@ -4,7 +4,6 @@ import { Match as MatchModel } from '../models/match.model';
 import { Group as GroupModel } from '../models/group.model';
 import { Player as PlayerModel } from '../models/player.model';
 
-/** Utilidad simple de balanceo por rating para MVP */
 function generateBalancedTeams(
   participants: { _id: string; rating: number }[],
 ) {

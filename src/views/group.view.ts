@@ -1,7 +1,7 @@
-import { Group } from '../models/group.model.js';
+import type { IGroup } from '../models/group.model.js';
 import { serializePlayer } from './player.view.js';
 
-export function serializeGroup(g: Group & { members?: any[] }) {
+export function serializeGroup(g: IGroup & { members?: any[] }) {
   return {
     id: String(g._id),
     name: g.name,
