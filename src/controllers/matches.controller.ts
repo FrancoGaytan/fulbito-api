@@ -27,7 +27,11 @@ function generateBalancedTeams(
 export async function createMatch(req: Request, res: Response) {
   try {
     // Narrow del body
-    const body = req.body as { groupId?: string; participants?: unknown; date?: unknown };
+    const body = req.body as {
+      groupId?: string;
+      participants?: unknown;
+      scheduledAt?: unknown;
+    };
     const groupId = body.groupId;
     if (!groupId || !Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ message: 'groupId inválido' });
@@ -35,7 +39,8 @@ export async function createMatch(req: Request, res: Response) {
 
     // participants opcional pero si viene debe ser string[] y ObjectId
     const partIds: string[] =
-      Array.isArray(body.participants) && body.participants.every((p) => typeof p === 'string')
+      Array.isArray(body.participants) &&
+      body.participants.every((p) => typeof p === 'string')
         ? (body.participants as string[])
         : [];
     const partIdsClean = [...new Set(partIds.map(String))]; // únicos
@@ -49,8 +54,12 @@ export async function createMatch(req: Request, res: Response) {
 
     // Si hay participantes, deben pertenecer al grupo
     if (partIdsClean.length) {
-      const setMembers = new Set((group.members ?? []).map((m) => m.toString()));
-      const outside = partIdsClean.filter((id) => !Types.ObjectId.isValid(id) || !setMembers.has(id));
+      const setMembers = new Set(
+        (group.members ?? []).map((m) => m.toString()),
+      );
+      const outside = partIdsClean.filter(
+        (id) => !Types.ObjectId.isValid(id) || !setMembers.has(id),
+      );
       if (outside.length) {
         return res.status(400).json({
           message: 'Todos los participantes deben pertenecer al grupo',
@@ -59,15 +68,33 @@ export async function createMatch(req: Request, res: Response) {
       }
     }
 
+    const rawDate =
+      (body as any).scheduledAt ??
+      (body as any).date ??
+      (body as any).when;
+
+    let when: Date | undefined = undefined;
+    if (
+      rawDate !== undefined &&
+      rawDate !== null &&
+      String(rawDate).trim() !== ''
+    ) {
+      const d = new Date(String(rawDate));
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({ message: 'scheduledAt inválido' });
+      }
+      when = d;
+    }
+
     const match = await MatchModel.create({
       groupId: new Types.ObjectId(groupId),
-      participants: partIdsClean.map((id) => new Types.ObjectId(id)),
+      participants: partIds.map((id) => new Types.ObjectId(id)),
       teams: [],
       feedback: [],
       result: undefined,
       status: 'pending',
-      owner: req.userId!, // del token
-      ...(body.date ? { date: new Date(String(body.date)) } : {}),
+      owner: req.userId!,
+       ...(when ? { scheduledAt: when } : {}),
     });
 
     return res.status(201).json(match);
@@ -96,12 +123,10 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     }).lean();
     return res.json(matches);
   } catch (err) {
-    return res
-      .status(500)
-      .json({
-        message: 'Error listando matches',
-        error: (err as Error).message,
-      });
+    return res.status(500).json({
+      message: 'Error listando matches',
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -127,9 +152,13 @@ export async function addParticipant(req: Request, res: Response) {
     const group = await GroupModel.findById(match.groupId).select('members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
 
-    const isMember = (group.members ?? []).some((m) => m.toString() === playerId);
+    const isMember = (group.members ?? []).some(
+      (m) => m.toString() === playerId,
+    );
     if (!isMember) {
-      return res.status(400).json({ message: 'El jugador no pertenece al grupo del match' });
+      return res
+        .status(400)
+        .json({ message: 'El jugador no pertenece al grupo del match' });
     }
 
     const updated = await MatchModel.findByIdAndUpdate(
@@ -142,12 +171,10 @@ export async function addParticipant(req: Request, res: Response) {
       return res.status(404).json({ message: 'Match no encontrado' });
     return res.json(updated);
   } catch (err) {
-    return res
-      .status(500)
-      .json({
-        message: 'Error agregando participante',
-        error: (err as Error).message,
-      });
+    return res.status(500).json({
+      message: 'Error agregando participante',
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -188,12 +215,10 @@ export async function generateTeams(req: Request, res: Response) {
     await match.save();
     return res.json({ teams: match.teams });
   } catch (err) {
-    return res
-      .status(500)
-      .json({
-        message: 'Error generando equipos',
-        error: (err as Error).message,
-      });
+    return res.status(500).json({
+      message: 'Error generando equipos',
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -244,12 +269,10 @@ export async function addFeedback(req: Request, res: Response) {
     await match.save();
     return res.json({ message: 'Feedback registrado' });
   } catch (err) {
-    return res
-      .status(500)
-      .json({
-        message: 'Error registrando feedback',
-        error: (err as Error).message,
-      });
+    return res.status(500).json({
+      message: 'Error registrando feedback',
+      error: (err as Error).message,
+    });
   }
 }
 
@@ -282,11 +305,9 @@ export async function finalizeMatch(req: Request, res: Response) {
     await match.save();
     return res.json(match);
   } catch (err) {
-    return res
-      .status(500)
-      .json({
-        message: 'Error finalizando match',
-        error: (err as Error).message,
-      });
+    return res.status(500).json({
+      message: 'Error finalizando match',
+      error: (err as Error).message,
+    });
   }
 }
