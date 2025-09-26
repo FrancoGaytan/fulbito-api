@@ -5,64 +5,48 @@ import groupsRouter from './routes/groups.routes.js'
 import playersRouter from './routes/players.routes.js'
 import matchesRouter from './routes/matches.routes.js'
 import authRoutes from './routes/auth.routes.js'
+
+import { attachUser, requireAuth } from './middlewares/auth.js'
 import { errorHandler } from './middlewares/error.js'
 
 export const buildApp = () => {
   const app = express()
 
-  const allowedOrigins: (string | RegExp)[] = [
+  // CORS: local + Vercel (ajustá el dominio si cambia)
+  const allowed = [
     'http://localhost:5173',
-    'http://127.0.0.1:5173',
     'https://fulbito-web.vercel.app',
-    /\.vercel\.app$/,
   ]
-
   app.use(
     cors({
-      origin: (origin, cb) => {
-        if (!origin) return cb(null, true)
-        const ok = allowedOrigins.some(o =>
-          typeof o === 'string' ? o === origin : o.test(origin),
-        )
-        cb(ok ? null : new Error('Not allowed by CORS'), ok)
+      origin(origin, cb) {
+        // Postman/cURL (sin origin) o permitido -> OK
+        if (!origin || allowed.includes(origin)) return cb(null, true)
+        cb(new Error('CORS not allowed: ' + origin))
       },
       credentials: false,
-    }),
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    })
   )
-
-  app.use((req, res, next) => {
-    const origin = req.headers.origin ?? ''
-    const isAllowed =
-      !origin ||
-      allowedOrigins.some(o =>
-        typeof o === 'string' ? o === origin : o.test(String(origin)),
-      )
-
-    if (isAllowed && origin) {
-      res.header('Access-Control-Allow-Origin', origin)
-    }
-    res.header('Vary', 'Origin')
-    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type')
-    res.header(
-      'Access-Control-Allow-Methods',
-      'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    )
-
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(204)
-    }
-    next()
-  })
 
   app.use(express.json())
 
+  // Health check público
   app.get('/health', (_req, res) => res.json({ ok: true }))
 
-  app.use('/api', groupsRouter)
-  app.use('/api', playersRouter)
-  app.use('/api/matches', matchesRouter)
+  // Adjunta req.userId si hay token. NO bloquea.
+  app.use(attachUser)
+
+  // Rutas públicas de auth (login/register)
   app.use('/api/auth', authRoutes)
 
+  // Resto protegido
+  app.use('/api', requireAuth, groupsRouter)
+  app.use('/api', requireAuth, playersRouter)
+  app.use('/api/matches', requireAuth, matchesRouter)
+
+  // Handler de errores
   app.use(errorHandler)
 
   return app

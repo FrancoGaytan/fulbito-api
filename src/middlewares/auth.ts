@@ -1,25 +1,33 @@
-import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import type { Request, Response, NextFunction } from 'express'
+import jwt, { type JwtPayload, type Secret } from 'jsonwebtoken'
 
-declare global {
-  namespace Express {
-    interface Request { userId?: string; userEmail?: string | undefined; }
+export function attachUser(req: Request, _res: Response, next: NextFunction) {
+  const auth = req.headers.authorization
+  if (!auth || !auth.startsWith('Bearer ')) return next()
+
+  const token = auth.slice(7).trim()
+
+  const secret = process.env.JWT_SECRET
+  if (!secret) {
+    console.warn('JWT_SECRET no definido; attachUser no puede verificar tokens')
+    return next()
   }
-}
-
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
-
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const hdr = req.header('Authorization') || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
-  if (!token) return res.status(401).json({ message: 'Token requerido' });
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { sub: string; email?: string };
-    req.userId = payload.sub;
-    req.userEmail = payload.email;
-    next();
+    const decoded = jwt.verify(token, secret as Secret)
+
+    if (typeof decoded === 'object' && decoded) {
+      const p = decoded as JwtPayload & Record<string, unknown>
+      req.userId = String(p.sub ?? (p as any).userId ?? (p as any).id ?? '')
+    }
   } catch {
-    return res.status(401).json({ message: 'Token inválido' });
+    // token inválido → dejamos req.userId undefined
   }
+  next()
+}
+
+/** Exige que exista req.userId, si no → 401 */
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
+  next()
 }
