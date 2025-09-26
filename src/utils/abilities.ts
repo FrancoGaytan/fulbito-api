@@ -1,4 +1,4 @@
-import { abilityKeys, type AbilityKey, isAbilityKey } from '../constants/abilities'
+import { abilityKeys, type AbilityKey, isAbilityKey } from '../constants/abilities.js'
 
 export type AbilityScores = Partial<Record<AbilityKey, number>>
 

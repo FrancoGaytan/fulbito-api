@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
 import { Player } from '../models/player.model'
-import { isAbilityKey } from '../constants/abilities'
+import { isAbilityKey } from '../constants/abilities.js'
 
 const MONGODB_URI = process.env.MONGO_URI!
 
