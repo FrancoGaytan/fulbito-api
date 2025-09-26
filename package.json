@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node --enable-source-maps --experimental-specifier-resolution=node dist/server.js",
     "lint": "eslint . --ext .ts",
     "format": "prettier -w .",
     "migrate:abilities": "ts-node scripts/migrate-abilities.ts"
