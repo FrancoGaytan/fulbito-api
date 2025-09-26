@@ -1,5 +1,5 @@
 import { Schema, model, type Document } from 'mongoose'
-import { isAbilityKey } from '../constants/abilities'
+import { isAbilityKey } from '../constants/abilities.js'
 
 export interface PlayerDoc extends Document {
   name: string
