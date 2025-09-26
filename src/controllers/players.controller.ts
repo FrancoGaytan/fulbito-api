@@ -1,7 +1,7 @@
 // src/controllers/players.controller.ts
 import { Request, Response } from 'express'
 import { isValidObjectId } from 'mongoose'
-import { Player } from '../models/player.model'
+import { Player } from '../models/player.model.js'
 import { normalizeAbilitiesInput } from '../utils/abilities'
 
 // Crear jugador (acepta array viejo o objeto nuevo)
