@@ -224,6 +224,47 @@ export async function generateTeams(req: Request, res: Response) {
         teamA = clean(a?.players ?? []);
         teamB = clean(b?.players ?? []);
 
+        // Validación de balance por rating y reequilibrio suave si está muy desbalanceado
+        const ratingsMap = new Map(participants.map(p => [p.id, p.rating]));
+        const sum = (arr: string[]) => arr.reduce((acc, id) => acc + (ratingsMap.get(id) || 1000), 0);
+        let sumA = sum(teamA);
+        let sumB = sum(teamB);
+        const diff = Math.abs(sumA - sumB);
+        const avgTeam = (sumA + sumB) / 2;
+        const threshold = Math.max(30, avgTeam * 0.05); // 5% o 30 como mínimo
+        if (diff > threshold && teamA.length && teamB.length) {
+          // Intento simple: ordenar por diferencia de impacto y mover un jugador
+          const tryImprove = () => {
+            let improved = false;
+            // Genero pares candidatos (jugador de A por jugador de B) y calculo nueva diferencia
+            let bestSwap: { a: string; b: string; newDiff: number } | null = null;
+            for (const pa of teamA) {
+              const ra = ratingsMap.get(pa) || 1000;
+              for (const pb of teamB) {
+                const rb = ratingsMap.get(pb) || 1000;
+                const newSumA = sumA - ra + rb;
+                const newSumB = sumB - rb + ra;
+                const newDiff = Math.abs(newSumA - newSumB);
+                if (newDiff < diff && (!bestSwap || newDiff < bestSwap.newDiff)) {
+                  bestSwap = { a: pa, b: pb, newDiff };
+                }
+              }
+            }
+            if (bestSwap) {
+              teamA = teamA.map(id => (id === bestSwap!.a ? bestSwap!.b : id));
+              teamB = teamB.map(id => (id === bestSwap!.b ? bestSwap!.a : id));
+              sumA = sum(teamA);
+              sumB = sum(teamB);
+              improved = true;
+            }
+            return improved;
+          };
+          // Hasta 5 intentos de mejora
+          for (let i = 0; i < 5; i++) {
+            if (!tryImprove()) break;
+            if (Math.abs(sumA - sumB) <= threshold) break;
+          }
+        }
         // completar si faltó alguien
         const assigned = new Set([...teamA, ...teamB]);
         const missing = participants.filter(p => !assigned.has(p.id));

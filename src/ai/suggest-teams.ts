@@ -19,14 +19,24 @@ export async function suggestTeamsWithGemini(input: {
 }): Promise<AiTeams> {
   const model = getGemini();
   const prompt = `
-Eres un organizador de fútbol 5. Divide a los jugadores en 2 equipos equilibrados ("A" y "B")
-usando 'rating' y 'abilities'. Usa TODOS los ids provistos, sin duplicados.
-Semilla: ${input.seed ?? 'none'}  // Si cambia la semilla, puede variar el split.
-Devuelve SOLO JSON:
-{"teams":[{"name":"A","players":["<id>",...]},{"name":"B","players":["<id>",...]}]}
-Jugadores:
+Eres un organizador de partidos de fútbol.
+Objetivo: formar 2 equipos ("A" y "B") lo más equilibrados posible considerando principalmente el campo 'rating'.
+
+Reglas y criterios:
+1. Cada jugador debe aparecer EXACTAMENTE una vez en alguno de los dos equipos.
+2. El tamaño de los equipos debe diferir como máximo en 1 jugador.
+3. Minimiza la diferencia absoluta de la suma de ratings (ideal < 5% del rating total de un equipo; si no se puede, el mínimo posible).
+4. Usa abilities (si existen) solo como criterio secundario para repartir jugadores con ratings similares.
+5. No inventes ni modifiques ids, usa exactamente los provistos.
+6. No agregues comentarios, explicación ni envoltorios (sin Markdown, sin texto extra).
+7. Formato de salida ESTRICTO (JSON sin espacios extra fuera del objeto raíz):
+{"teams":[{"name":"A","players":["<id>","<id>"]},{"name":"B","players":["<id>","<id>"]}]}
+
+Semilla (puede influir en soluciones alternativas con balance aceptable): ${input.seed ?? 'none'}
+
+Listado de jugadores (rating y abilities):
 ${JSON.stringify(input.participants, null, 2)}
-  `.trim();
+`.trim();
 
   const resp = await model.generateContent(prompt);
   const text = resp.response.text();
