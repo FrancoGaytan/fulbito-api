@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { Player } from '../models/player.model.js'
 import { normalizeAbilitiesInput } from '../utils/abilities.js'
+import { deletePlayer } from '../controllers/players.controller.js'
 
 const router = Router()
 
@@ -62,6 +63,11 @@ router.patch('/players/:id/abilities', async (req, res, next) => {
   } catch (e) {
     next(e)
   }
+})
+
+// ELIMINAR jugador y limpiarlo de grupos/matches
+router.delete('/players/:id', async (req, res, next) => {
+  try { return await deletePlayer(req, res) } catch (e) { next(e) }
 })
 
 export default router

@@ -6,6 +6,7 @@ import {
   joinGroup,
   addPlayersToGroup,
   addPlayerToGroup,
+  deleteGroup,
 } from '../controllers/groups.controller.js'
 import { requireAuth } from '../middlewares/auth.js'
 
@@ -17,5 +18,6 @@ router.post('/groups', requireAuth, createGroup)
 router.post('/groups/:id/join', requireAuth, joinGroup)
 router.post('/groups/:id/players', requireAuth, addPlayersToGroup) // bulk
 router.post('/groups/:id/player', requireAuth, addPlayerToGroup)   // single (compat)
+router.delete('/groups/:id', requireAuth, deleteGroup)
 
 export default router

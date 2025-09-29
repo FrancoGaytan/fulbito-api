@@ -339,3 +339,133 @@ export async function finalizeMatch(req: Request, res: Response) {
     return res.status(500).json({ message: 'Error finalizando match', error: (err as Error).message });
   }
 }
+
+/* ----------------------------------- delete ------------------------------------ */
+
+export async function deleteMatch(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+
+    const deleted = await MatchModel.findByIdAndDelete(matchId);
+    if (!deleted) return res.status(404).json({ message: 'Match no encontrado' });
+
+    // podríamos devolver 204, pero mantenemos consistencia con mensajes JSON
+    return res.status(200).json({ message: 'Match eliminado' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error eliminando match', error: (err as Error).message });
+  }
+}
+
+/* -------------------------------- applyRatings --------------------------------- */
+
+// Aplica cambios de rating basados en resultado + feedback (una sola vez)
+export async function applyRatings(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+
+    const match = await MatchModel.findById(matchId)
+      .populate('teams.players', 'rating')
+      .select('teams status result feedback ratingApplied ratingChanges participants');
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+    if (match.status !== 'finalized') {
+      return res.status(400).json({ message: 'El match debe estar finalizado' });
+    }
+    if (match.ratingApplied) {
+      return res.status(409).json({ message: 'Ratings ya aplicados' });
+    }
+
+    // Reglas básicas:
+    // - Base delta por resultado: +10 victoria, -10 derrota, +2 empate
+    // - Ajuste por feedback acumulado (up:+2, neutral:0, down:-2) limitado a ±6
+    // - Multiplicador suave si rating < 950 (+20%) o > 1200 (-20%)
+    const baseWin = 10;
+    const baseLose = -10;
+    const baseDraw = 2;
+    const fbUp = 2;
+    const fbDown = -2;
+    const fbCap = 6; // máximo ajuste absoluto por feedback
+
+    const teamA = match.teams[0];
+    const teamB = match.teams[1];
+    if (!teamA || !teamB || !match.result) {
+      return res.status(400).json({ message: 'Faltan equipos o resultado' });
+    }
+
+    const scoreA = match.result.scoreA;
+    const scoreB = match.result.scoreB;
+    let outcomeA: 'win' | 'lose' | 'draw';
+    if (scoreA > scoreB) outcomeA = 'win';
+    else if (scoreA < scoreB) outcomeA = 'lose';
+    else outcomeA = 'draw';
+    const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
+
+    // Preprocesar feedback por jugador
+    const fbMap = new Map<string, number>();
+    for (const f of match.feedback) {
+      const pid = f.playerId.toString();
+      const prev = fbMap.get(pid) ?? 0;
+      let delta = 0;
+      if (f.vote === 'up') delta = fbUp;
+      else if (f.vote === 'down') delta = fbDown;
+      // neutral = 0
+      fbMap.set(pid, prev + delta);
+    }
+    // clamp
+    for (const [k, v] of fbMap.entries()) {
+      if (v > fbCap) fbMap.set(k, fbCap);
+      else if (v < -fbCap) fbMap.set(k, -fbCap);
+    }
+
+    const playerDeltas: { playerId: Types.ObjectId; before: number; after: number; delta: number }[] = [];
+    const playerUpdates: { _id: Types.ObjectId; rating: number }[] = [];
+
+    const applyForTeam = (team: any, outcome: 'win' | 'lose' | 'draw') => {
+      for (const p of team.players as any[]) {
+        if (!p || !p._id) continue;
+        const before = typeof p.rating === 'number' ? p.rating : 1000;
+        let base = outcome === 'win' ? baseWin : outcome === 'lose' ? baseLose : baseDraw;
+        const fb = fbMap.get(p._id.toString()) ?? 0;
+        let total = base + fb;
+        // multiplicador según rating
+        if (before < 950) total = Math.round(total * 1.2);
+        else if (before > 1200) total = Math.round(total * 0.8);
+        // limitar delta extremo
+        if (total > 40) total = 40;
+        if (total < -40) total = -40;
+        const after = Math.max(500, before + total); // límite inferior 500
+        playerDeltas.push({ playerId: p._id, before, after, delta: after - before });
+        playerUpdates.push({ _id: p._id, rating: after });
+      }
+    };
+
+    applyForTeam(teamA, outcomeA);
+    applyForTeam(teamB, outcomeB);
+
+    // Aplicar updates (bulk)
+    if (playerUpdates.length) {
+      const bulk = playerUpdates.map(u => ({
+        updateOne: {
+          filter: { _id: u._id },
+          update: { $set: { rating: u.rating } },
+        },
+      }));
+      // Importación lazy para evitar ciclo si existiera
+      const { Player } = await import('../models/player.model.js');
+      await Player.bulkWrite(bulk as any);
+    }
+
+    match.ratingApplied = true as any;
+    match.ratingChanges = playerDeltas as any;
+    await match.save();
+
+    return res.json({ applied: playerDeltas.length, changes: playerDeltas });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error aplicando ratings', error: (err as Error).message });
+  }
+}

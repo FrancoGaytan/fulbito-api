@@ -29,6 +29,13 @@ export interface IMatch extends Document {
   status: 'pending' | 'ongoing' | 'finalized';
   owner: Types.ObjectId;
   scheduledAt?: Date;
+  ratingApplied?: boolean;
+  ratingChanges?: {
+    playerId: Types.ObjectId;
+    before: number;
+    after: number;
+    delta: number;
+  }[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +88,21 @@ const matchSchema = new Schema<IMatch>(
       index: true,
     },
     scheduledAt: { type: Date },
+    ratingApplied: { type: Boolean, default: false },
+    ratingChanges: {
+      type: [
+        new Schema(
+          {
+            playerId: { type: Schema.Types.ObjectId, ref: 'Player', required: true },
+            before: { type: Number, required: true },
+            after: { type: Number, required: true },
+            delta: { type: Number, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true },
 );

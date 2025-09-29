@@ -17,5 +17,7 @@ router.post('/:id/participants', requireAuth, enforceOwnership(Match, 'id'), ctr
 router.post('/:id/generate-teams', requireAuth, enforceOwnership(Match, 'id'), ctrl.generateTeams);
 router.post('/:id/feedback', requireAuth, enforceOwnership(Match, 'id'), ctrl.addFeedback);
 router.post('/:id/finalize', requireAuth, enforceOwnership(Match, 'id'), ctrl.finalizeMatch);
+router.delete('/:id', requireAuth, enforceOwnership(Match, 'id'), ctrl.deleteMatch);
+router.post('/:id/apply-ratings', requireAuth, enforceOwnership(Match, 'id'), ctrl.applyRatings);
 
 export default router;

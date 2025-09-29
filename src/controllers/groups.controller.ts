@@ -39,20 +39,16 @@ async function getMyPlayerId(userId: string): Promise<string | null> {
   return me?._id ? String(me._id) : null
 }
 
-/** Crea un grupo y agrega automáticamente al Player del usuario (si existe) */
+/** Crea un grupo vacío (sin miembros). Antes se agregaba automáticamente el Player del usuario. */
 export async function createGroup(req: Request, res: Response) {
   try {
     const { name } = req.body as { name: string }
     if (!name) return res.status(400).json({ message: 'name requerido' })
 
     const userId = getUserId(req)
-    const myPlayerId = await getMyPlayerId(userId)
-
-    const group = await Group.create({
-      name,
-      owner: userId,
-      members: myPlayerId ? [toObjectId(myPlayerId)] : [],
-    })
+    // Ya no auto-agregamos el player del usuario para que el grupo nazca vacío.
+    // Si querés volver a ese comportamiento podés pasar un query param ?autoJoin=1 y usarlo aquí.
+    const group = await Group.create({ name, owner: userId, members: [] })
 
     return res.status(201).json(group)
   } catch (err) {
@@ -174,5 +170,24 @@ export async function addPlayerToGroup(req: Request, res: Response) {
       message: 'Error agregando jugador al grupo',
       error: (err as Error).message,
     })
+  }
+}
+
+/** Elimina un grupo por id (solo owner). TODO: decidir si cascada sobre Matches, etc. */
+export async function deleteGroup(req: Request, res: Response) {
+  try {
+    const groupId = String(req.params.id)
+    if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
+
+    const userId = getUserId(req)
+    // Validamos ownership antes de eliminar
+    const group = await Group.findOne({ _id: groupId, owner: userId }).select('_id')
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado o no te pertenece' })
+
+    await Group.deleteOne({ _id: groupId })
+    // Opcional: borrar matches asociados -> Match.deleteMany({ groupId })
+    return res.status(200).json({ message: 'Grupo eliminado' })
+  } catch (err) {
+    return res.status(500).json({ message: 'Error eliminando grupo', error: (err as Error).message })
   }
 }
