@@ -332,8 +332,26 @@ export async function finalizeMatch(req: Request, res: Response) {
       match.teams[1].score = scoreB;
     }
 
-    // (aquí podrías actualizar ELO por jugador, etc.)
+    // Guardar antes de actualizar jugadores
     await match.save();
+
+    // Incrementar gamesPlayed para jugadores únicos en los teams (solo una vez por match)
+    try {
+      const playerIdsSet = new Set<string>();
+      for (const t of match.teams) {
+        for (const pid of (t.players as any[])) {
+          if (pid) playerIdsSet.add(pid.toString());
+        }
+      }
+      if (playerIdsSet.size) {
+        const ids = Array.from(playerIdsSet).map(id => new Types.ObjectId(id));
+        const { Player } = await import('../models/player.model.js');
+        await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
+      }
+    } catch (e) {
+      // logging silencioso: podrías integrar logger real
+      // console.error('Error incrementando gamesPlayed', e);
+    }
     return res.json(match);
   } catch (err) {
     return res.status(500).json({ message: 'Error finalizando match', error: (err as Error).message });

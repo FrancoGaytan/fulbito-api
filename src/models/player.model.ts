@@ -6,6 +6,7 @@ export interface PlayerDoc extends Document {
   nickname?: string
   abilities?: Map<string, number>
   rating?: number
+  gamesPlayed?: number
   createdAt: Date
   updatedAt: Date
 }
@@ -31,6 +32,7 @@ const PlayerSchema = new Schema<PlayerDoc>(
       },
     },
     rating: { type: Number, default: 1000 },
+  gamesPlayed: { type: Number, default: 0, min: 0 },
   },
   {
     timestamps: true,

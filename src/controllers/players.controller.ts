@@ -10,17 +10,33 @@ import { Types } from 'mongoose'
 // Crear jugador (acepta array viejo o objeto nuevo)
 export async function createPlayer(req: Request, res: Response) {
   try {
-    const { name, nickname, abilities } = req.body
+    const { name, nickname, abilities } = req.body as { name?: string; nickname?: string; abilities?: unknown }
     if (!name) return res.status(400).json({ message: 'name is required' })
 
     const normalized = normalizeAbilitiesInput(abilities) // { key: score } | undefined
+
+    // Calcular rating inicial basado en average de abilities si vienen
+    let initialRating = 1000
+    if (normalized && Object.keys(normalized).length) {
+      const scores = Object.values(normalized)
+      const avg = scores.reduce((a, b) => a + (b || 0), 0) / scores.length
+      // Fórmula: 1000 + (avg - 5) * 40  (avg 5 =>1000, avg10=>1200, avg1=>840)
+      initialRating = 1000 + (avg - 5) * 40
+      // Clamp
+      if (initialRating < 800) initialRating = 800
+      if (initialRating > 1250) initialRating = 1250
+      initialRating = Math.round(initialRating)
+    }
+
     const created = await Player.create({
       name,
       nickname,
       abilities: normalized, // Mongoose guarda como Map
-    })
+      rating: initialRating,
+      owner: (req as any).userId, // por consistencia con rutas que usan owner
+    } as any)
 
-    return res.status(201).json(created) // toJSON ya debe tener flattenMaps
+    return res.status(201).json(created)
   } catch (err) {
     return res.status(500).json({ message: 'Error creando jugador', error: (err as Error).message })
   }
