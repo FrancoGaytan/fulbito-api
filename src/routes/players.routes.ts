@@ -32,6 +32,19 @@ router.get('/players/all', async (req, res, next) => {
   } catch (e) { next(e) }
 })
 
+// OBTENER un jugador por id
+// Nota: dejar este después de /players/all para que 'all' no sea tomado como :id
+router.get('/players/:id', async (req, res, next) => {
+  try {
+    if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
+    const { id } = req.params
+    if (!id) return res.status(400).json({ message: 'id requerido' })
+    const player = await Player.findById(id).lean({ getters: true })
+    if (!player) return res.status(404).json({ message: 'player not found' })
+    return res.json(player)
+  } catch (e) { next(e) }
+})
+
 // CREAR jugador (queda asociado al owner del token)
 router.post('/players', async (req, res, next) => {
   try {
@@ -65,7 +78,7 @@ router.patch('/players/:id/abilities', async (req, res, next) => {
 
     const normalized = normalizeAbilitiesInput(req.body?.abilities)
     const updated = await Player.findOneAndUpdate(
-      { _id: req.params.id, owner: req.userId },
+      { _id: req.params.id, $or: [ { owner: req.userId }, { userId: req.userId } ] },
       { abilities: normalized },
       { new: true, runValidators: true }
     ).lean({ getters: true })
@@ -75,6 +88,21 @@ router.patch('/players/:id/abilities', async (req, res, next) => {
   } catch (e) {
     next(e)
   }
+})
+
+// Alias más expresivo para edición de skills (mismo comportamiento)
+router.patch('/players/:id/skills', async (req, res, next) => {
+  try {
+    if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
+    const normalized = normalizeAbilitiesInput(req.body?.abilities)
+    const updated = await Player.findOneAndUpdate(
+      { _id: req.params.id, $or: [ { owner: req.userId }, { userId: req.userId } ] },
+      { abilities: normalized },
+      { new: true, runValidators: true }
+    ).lean({ getters: true })
+    if (!updated) return res.status(404).json({ message: 'player not found' })
+    return res.json(updated)
+  } catch (e) { next(e) }
 })
 
 // ELIMINAR jugador y limpiarlo de grupos/matches
@@ -88,7 +116,6 @@ router.post('/players/:id/claim', async (req, res, next) => {
     if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
     const { id } = req.params
     if (!id) return res.status(400).json({ message: 'id requerido' })
-    // Usa findOneAndUpdate con filtro userId inexistente para atomicidad
     const updated = await Player.findOneAndUpdate(
       { _id: id, userId: { $exists: false } },
       { $set: { userId: req.userId } },
