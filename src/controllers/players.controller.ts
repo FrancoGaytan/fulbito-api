@@ -2,7 +2,7 @@
 import { Request, Response } from 'express'
 import { isValidObjectId } from 'mongoose'
 import { Player } from '../models/player.model.js'
-import { normalizeAbilitiesInput } from '../utils/abilities'
+import { normalizeAbilitiesInput } from '../utils/abilities.js'
 import { Group } from '../models/group.model.js'
 import { Match } from '../models/match.model.js'
 import { Types } from 'mongoose'
