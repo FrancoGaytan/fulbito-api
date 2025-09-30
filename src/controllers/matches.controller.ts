@@ -29,12 +29,11 @@ function seededRng(seed: number) {
 
 function seededShuffle<T>(arr: ReadonlyArray<T>, seed: number): T[] {
   const rnd = seededRng(seed || Math.floor(Math.random() * 1e9));
-  const a = arr.slice(); // copia mutable
+  const a = arr.slice();
 
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rnd() * (i + 1));
-    // swap seguro para TS
-    const tmp = a[i]!;   // sabemos que existe
+  const j = Math.floor(rnd() * (i + 1));
+  const tmp = a[i]!;
     a[i] = a[j]!;
     a[j] = tmp;
   }
@@ -57,14 +56,12 @@ export async function createMatch(req: Request, res: Response) {
       return res.status(400).json({ message: 'groupId inválido' });
     }
 
-    // participants opcional, si viene: string[]
     const partIds: string[] =
       Array.isArray(body.participants) && body.participants.every(p => typeof p === 'string')
         ? (body.participants as string[])
         : [];
     const partIdsClean = [...new Set(partIds.map(String))];
 
-    // grupo existe y usuario debe ser owner o miembro (jugador dentro de members)
     const group = await GroupModel.findById(groupId).select('owner members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
 
@@ -82,7 +79,6 @@ export async function createMatch(req: Request, res: Response) {
       return res.status(403).json({ message: 'No pertenecés al grupo' });
     }
 
-    // si hay participantes, deben pertenecer al grupo
     if (partIdsClean.length) {
       const setMembers = new Set((group.members ?? []).map(m => m.toString()));
       const outside = partIdsClean.filter(id => !Types.ObjectId.isValid(id) || !setMembers.has(id));
@@ -94,7 +90,6 @@ export async function createMatch(req: Request, res: Response) {
       }
     }
 
-    // fecha opcional
     const rawDate = (body as any).scheduledAt ?? (body as any).date ?? (body as any).when;
     let when: Date | undefined = undefined;
     if (rawDate !== undefined && rawDate !== null && String(rawDate).trim() !== '') {
@@ -133,7 +128,6 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     const group = await GroupModel.findById(groupId).select('owner members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
 
-    // obtener player del usuario (owner o userId reclamado)
     const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] })
       .select('_id')
       .lean();
@@ -143,9 +137,7 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
     if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
 
-    // ahora traemos TODOS los matches del grupo
     const matches = await MatchModel.find({ groupId }).lean();
-    // Obtener mis votos por match (un solo query agregando matchId in [...])
     const matchIds = matches.map(m => m._id);
     const { MatchPlayerVote } = await import('../models/match-vote.model.js');
     const votes = await MatchPlayerVote.find({ matchId: { $in: matchIds }, voterUserId: req.userId })
@@ -219,7 +211,6 @@ export async function generateTeams(req: Request, res: Response) {
       return res.status(400).json({ message: 'Id inválido' });
     }
 
-    // Ruta con enforceOwnership(Match)
     const match = await MatchModel.findById(matchId)
       .populate('participants', 'name rating abilities')
       .select('participants teams status');
@@ -230,7 +221,6 @@ export async function generateTeams(req: Request, res: Response) {
       name: p.name,
       rating: typeof p.rating === 'number' ? p.rating : 1000,
       abilities: ((): Record<string, number> => {
-        // si viene como Map, lo convierto a objeto plano
         const a = p.abilities;
         if (!a) return {};
         if (typeof a.entries === 'function') return Object.fromEntries(a.entries());
@@ -250,7 +240,6 @@ export async function generateTeams(req: Request, res: Response) {
         const a = find('A') ?? ai.teams[0];
         const b = find('B') ?? ai.teams[1];
 
-        // limpiar ids desconocidos/duplicados
         const clean = (arr: string[]) => {
           const seen = new Set<string>();
           const out: string[] = [];
@@ -263,19 +252,16 @@ export async function generateTeams(req: Request, res: Response) {
         teamA = clean(a?.players ?? []);
         teamB = clean(b?.players ?? []);
 
-        // Validación de balance por rating y reequilibrio suave si está muy desbalanceado
         const ratingsMap = new Map(participants.map(p => [p.id, p.rating]));
         const sum = (arr: string[]) => arr.reduce((acc, id) => acc + (ratingsMap.get(id) || 1000), 0);
         let sumA = sum(teamA);
         let sumB = sum(teamB);
         const diff = Math.abs(sumA - sumB);
         const avgTeam = (sumA + sumB) / 2;
-        const threshold = Math.max(30, avgTeam * 0.05); // 5% o 30 como mínimo
+  const threshold = Math.max(30, avgTeam * 0.05);
         if (diff > threshold && teamA.length && teamB.length) {
-          // Intento simple: ordenar por diferencia de impacto y mover un jugador
           const tryImprove = () => {
             let improved = false;
-            // Genero pares candidatos (jugador de A por jugador de B) y calculo nueva diferencia
             let bestSwap: { a: string; b: string; newDiff: number } | null = null;
             for (const pa of teamA) {
               const ra = ratingsMap.get(pa) || 1000;
@@ -298,13 +284,11 @@ export async function generateTeams(req: Request, res: Response) {
             }
             return improved;
           };
-          // Hasta 5 intentos de mejora
           for (let i = 0; i < 5; i++) {
             if (!tryImprove()) break;
             if (Math.abs(sumA - sumB) <= threshold) break;
           }
         }
-        // completar si faltó alguien
         const assigned = new Set([...teamA, ...teamB]);
         const missing = participants.filter(p => !assigned.has(p.id));
         if (missing.length) {
@@ -316,14 +300,12 @@ export async function generateTeams(req: Request, res: Response) {
           }
         }
       } catch (e) {
-        // IA falló -> fallback local
         const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating }));
         const fb = generateBalancedTeams(shuffled);
         teamA = fb.teamA;
         teamB = fb.teamB;
       }
     } else {
-      // Solo algoritmo local con semilla
       const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating }));
       const fb = generateBalancedTeams(shuffled);
       teamA = fb.teamA;
@@ -336,7 +318,7 @@ export async function generateTeams(req: Request, res: Response) {
     ];
     await match.save();
 
-    return res.json({ teams: match.teams }); // (podrías devolver seed si querés)
+  return res.json({ teams: match.teams });
   } catch (err) {
     return res.status(500).json({
       message: 'Error generando equipos',
@@ -367,7 +349,6 @@ export async function addFeedback(req: Request, res: Response) {
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
     if (match.ratingApplied) return res.status(409).json({ message: 'Ratings ya aplicados' });
 
-    // validar que playerId pertenece: en participants o en teams[*].players
     const playerIdStr = body.playerId;
     const inParticipants = match.participants.some(p => p.toString() === playerIdStr);
     let inTeams = false;
@@ -413,16 +394,13 @@ export async function finalizeMatch(req: Request, res: Response) {
     match.status = 'finalized';
     match.result = { scoreA, scoreB, finalizedAt: new Date() } as any;
 
-    // reflejar scores en teams si existen
     if (Array.isArray(match.teams) && match.teams.length >= 2 && match.teams[0] && match.teams[1]) {
       match.teams[0].score = scoreA;
       match.teams[1].score = scoreB;
     }
 
-    // Guardar antes de actualizar jugadores
     await match.save();
 
-    // Incrementar gamesPlayed para jugadores únicos en los teams (solo una vez por match)
     try {
       const playerIdsSet = new Set<string>();
       for (const t of match.teams) {
@@ -436,8 +414,6 @@ export async function finalizeMatch(req: Request, res: Response) {
         await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
       }
     } catch (e) {
-      // logging silencioso: podrías integrar logger real
-      // console.error('Error incrementando gamesPlayed', e);
     }
     return res.json(match);
   } catch (err) {
@@ -457,7 +433,6 @@ export async function deleteMatch(req: Request, res: Response) {
     const deleted = await MatchModel.findByIdAndDelete(matchId);
     if (!deleted) return res.status(404).json({ message: 'Match no encontrado' });
 
-    // podríamos devolver 204, pero mantenemos consistencia con mensajes JSON
     return res.status(200).json({ message: 'Match eliminado' });
   } catch (err) {
     return res.status(500).json({ message: 'Error eliminando match', error: (err as Error).message });
@@ -485,9 +460,6 @@ export async function applyRatings(req: Request, res: Response) {
       return res.status(409).json({ message: 'Ratings ya aplicados' });
     }
 
-    // (Opcional) Si en el futuro se desea forzar que todos voten antes de aplicar, se podría usar
-    // un query param ?requireFull=1 y chequear buildVoteProgress(match). Por ahora se permite aplicar
-    // apenas el owner quiera una vez finalizado el partido.
     if (req.query.requireFull === '1') {
       const progress = await buildVoteProgress(match);
       if (!progress.allVotersCompletedAllPlayers) {
@@ -498,16 +470,12 @@ export async function applyRatings(req: Request, res: Response) {
       }
     }
 
-    // Reglas básicas:
-    // - Base delta por resultado: +10 victoria, -10 derrota, +2 empate
-    // - Ajuste por feedback acumulado (up:+2, neutral:0, down:-2) limitado a ±6
-    // - Multiplicador suave si rating < 950 (+20%) o > 1200 (-20%)
     const baseWin = 10;
     const baseLose = -10;
     const baseDraw = 2;
     const fbUp = 2;
     const fbDown = -2;
-    const fbCap = 6; // máximo ajuste absoluto por feedback
+  const fbCap = 6;
 
     const teamA = match.teams[0];
     const teamB = match.teams[1];
@@ -523,7 +491,6 @@ export async function applyRatings(req: Request, res: Response) {
     else outcomeA = 'draw';
     const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
 
-    // Agregar votos desde colección externa
     const rawVotes = await MatchPlayerVote.aggregate([
       { $match: { matchId: new Types.ObjectId(matchId) } },
       { $group: { _id: '$playerId', score: { $sum: {
@@ -554,13 +521,11 @@ export async function applyRatings(req: Request, res: Response) {
         let base = outcome === 'win' ? baseWin : outcome === 'lose' ? baseLose : baseDraw;
         const fb = fbMap.get(p._id.toString()) ?? 0;
         let total = base + fb;
-        // multiplicador según rating
         if (before < 950) total = Math.round(total * 1.2);
         else if (before > 1200) total = Math.round(total * 0.8);
-        // limitar delta extremo
         if (total > 40) total = 40;
         if (total < -40) total = -40;
-        const after = Math.max(500, before + total); // límite inferior 500
+  const after = Math.max(500, before + total);
         playerDeltas.push({ playerId: p._id, before, after, delta: after - before });
         playerUpdates.push({ _id: p._id, rating: after });
       }
@@ -569,7 +534,6 @@ export async function applyRatings(req: Request, res: Response) {
     applyForTeam(teamA, outcomeA);
     applyForTeam(teamB, outcomeB);
 
-    // Aplicar updates (bulk)
     if (playerUpdates.length) {
       const bulk = playerUpdates.map(u => ({
         updateOne: {
@@ -577,7 +541,6 @@ export async function applyRatings(req: Request, res: Response) {
           update: { $set: { rating: u.rating } },
         },
       }));
-      // Importación lazy para evitar ciclo si existiera
       const { Player } = await import('../models/player.model.js');
       await Player.bulkWrite(bulk as any);
     }

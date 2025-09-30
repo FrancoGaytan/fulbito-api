@@ -13,7 +13,6 @@ router.post('/register', async (req, res, next) => {
     const { email, password } = req.body as { email: string; password: string };
     if (!email || !password) return res.status(400).json({ message: 'email y password requeridos' });
 
-    // Chequeo optimista (evita consulta extra si hay race)
     const exists = await User.findOne({ email });
     if (exists) return res.status(409).json({ message: 'Email ya registrado' });
 
@@ -23,7 +22,6 @@ router.post('/register', async (req, res, next) => {
     const token = jwt.sign({ sub: user.id, email }, JWT_SECRET, { expiresIn: JWT_EXP });
     res.status(201).json({ token });
   } catch (err: any) {
-    // Manejo de condición de carrera -> índice único Mongo
     if (err && err.code === 11000) {
       return res.status(409).json({ message: 'Email ya registrado' });
     }
@@ -45,9 +43,8 @@ router.post('/login', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/* ------------------------- Password Reset (6 digit code) ------------------------- */
+/* ------------------------- Password Reset ------------------------- */
 
-// 1. Solicitar código (responde 200 siempre)
 router.post('/request-reset-code', async (req, res, next) => {
   try {
     const { email } = req.body as { email?: string };
@@ -58,7 +55,6 @@ router.post('/request-reset-code', async (req, res, next) => {
       user.resetCodeHash = hashSha256(code);
       const ttlMin = Number(process.env.RESET_CODE_TTL_MINUTES || '15');
       user.resetCodeExpires = minutesFromNow(ttlMin);
-      // invalidar session token anterior
       user.passwordResetSessionToken = null;
       await user.save();
       const payload: any = { ok: true, message: 'If the email exists, a reset code was generated.' };
@@ -69,7 +65,6 @@ router.post('/request-reset-code', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// 2. Verificar código y devolver resetSessionToken
 router.post('/verify-reset-code', async (req, res, next) => {
   try {
     const { email, code } = req.body as { email?: string; code?: string };
@@ -85,10 +80,8 @@ router.post('/verify-reset-code', async (req, res, next) => {
     if (codeHash !== user.resetCodeHash) {
       return res.status(400).json({ message: 'Código inválido' });
     }
-    // generar session token
     const session = genSessionToken();
     user.passwordResetSessionToken = hashSha256(session);
-    // invalidar código para que no se reutilice
     user.resetCodeHash = null;
     user.resetCodeExpires = null;
     await user.save();
@@ -96,7 +89,6 @@ router.post('/verify-reset-code', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// 3. Aplicar nueva contraseña
 router.post('/reset-password', async (req, res, next) => {
   try {
     const { email, resetSessionToken, newPassword } = req.body as { email?: string; resetSessionToken?: string; newPassword?: string };
@@ -111,12 +103,9 @@ router.post('/reset-password', async (req, res, next) => {
     if (tokenHash !== user.passwordResetSessionToken) {
       return res.status(400).json({ message: 'Token inválido' });
     }
-    // actualizar password
     user.passwordHash = await bcrypt.hash(newPassword, 12);
-    // limpiar session token
     user.passwordResetSessionToken = null;
     await user.save();
-    // opcional: login automático
     const token = jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: JWT_EXP });
     return res.json({ ok: true, token });
   } catch (err) { next(err); }

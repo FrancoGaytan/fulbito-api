@@ -51,10 +51,10 @@ function buildPlayersDocs(seed: SeedPlayer[], ownerId: string) {
 
   return seed.map((p) => ({
     name: p.name,
-    abilities: p.abilities.map(a => a.key),                 // <- SOLO keys
+  abilities: p.abilities.map(a => a.key),
     rating: 1000,
-    ratingHistory: [],                                      // podés dejar vacío
-    skillHistory: p.abilities.map(a => ({                   // <- inicializamos valores
+  ratingHistory: [],
+  skillHistory: p.abilities.map(a => ({
       key: a.key, value: a.value, at: now,
     })),
     owner,

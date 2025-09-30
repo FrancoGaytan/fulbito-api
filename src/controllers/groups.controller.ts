@@ -9,10 +9,7 @@ const isHexId = (s: unknown): s is string =>
 
 const toObjectId = (s: string) => new Types.ObjectId(s)
 
-function getUserId(req: Request): string {
-  // tu middleware ya setea req.userId (string)
-  return (req as any).userId as string
-}
+function getUserId(req: Request): string { return (req as any).userId as string }
 
 /** Normaliza arreglos de IDs desde distintas claves y/o body como string */
 function normalizeIdArray(body: any): string[] {
@@ -39,7 +36,7 @@ async function getMyPlayerId(userId: string): Promise<string | null> {
   return me?._id ? String(me._id) : null
 }
 
-/** Crea un grupo vacío (sin miembros). Antes se agregaba automáticamente el Player del usuario. */
+/** Crear grupo (vacío) */
 export async function createGroup(req: Request, res: Response) {
   try {
     const { name } = req.body as { name: string }
@@ -58,7 +55,7 @@ export async function createGroup(req: Request, res: Response) {
   }
 }
 
-/** Lista grupos donde soy owner o miembro */
+/** Listar grupos (owner o miembro) */
 export async function listGroups(req: Request, res: Response) {
   try {
     const userId = getUserId(req)
@@ -82,7 +79,7 @@ export async function listGroups(req: Request, res: Response) {
   }
 }
 
-/** Detalle de grupo con flags de acceso */
+/** Detalle de grupo */
 export async function getGroupDetail(req: Request, res: Response) {
   try {
     const groupId = String(req.params.id)
@@ -105,7 +102,7 @@ export async function getGroupDetail(req: Request, res: Response) {
   }
 }
 
-/** El usuario logueado se une (self-join) al grupo */
+/** Unirse al grupo */
 export async function joinGroup(req: Request, res: Response) {
   try {
     const groupId = String(req.params.id)
@@ -129,17 +126,15 @@ export async function joinGroup(req: Request, res: Response) {
   }
 }
 
-/** Bulk add: agrega varios players (por id) al grupo del usuario */
+/** Agregar varios players */
 export async function addPlayersToGroup(req: Request, res: Response) {
   try {
     const groupId = String(req.params.id)
     if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
 
-    // IDs desde playerIds | ids | players (y acepta body string)
     const ids = normalizeIdArray(req.body)
     if (!ids.length) return res.status(400).json({ message: 'Ids inválidos' })
 
-    // (opcional) Validar ownership de cada Player (que te pertenezcan)
     const userId = getUserId(req)
     const owned = await Player.find({ _id: { $in: ids }, owner: userId })
       .select('_id')
@@ -154,7 +149,6 @@ export async function addPlayersToGroup(req: Request, res: Response) {
       })
     }
 
-    // Update con $addToSet para evitar duplicados
     const updated = await Group.findByIdAndUpdate(
       groupId,
       { $addToSet: { members: { $each: ids.map(toObjectId) } } },
@@ -171,7 +165,7 @@ export async function addPlayersToGroup(req: Request, res: Response) {
   }
 }
 
-/** Compat: agrega UN player (body: { playerId }) usando la misma validación */
+/** Agregar un player */
 export async function addPlayerToGroup(req: Request, res: Response) {
   try {
     const groupId = String(req.params.id)
@@ -181,7 +175,6 @@ export async function addPlayerToGroup(req: Request, res: Response) {
       return res.status(400).json({ message: 'Ids inválidos' })
     }
 
-    // Reusa la validación de ownership
     const userId = getUserId(req)
     const player = await Player.findOne({ _id: playerId, owner: userId })
       .select('_id')
@@ -208,19 +201,16 @@ export async function addPlayerToGroup(req: Request, res: Response) {
   }
 }
 
-/** Elimina un grupo por id (solo owner). TODO: decidir si cascada sobre Matches, etc. */
+/** Eliminar grupo (solo owner) */
 export async function deleteGroup(req: Request, res: Response) {
   try {
     const groupId = String(req.params.id)
     if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
 
     const userId = getUserId(req)
-    // Validamos ownership antes de eliminar
     const group = await Group.findOne({ _id: groupId, owner: userId }).select('_id')
-    if (!group) return res.status(404).json({ message: 'Grupo no encontrado o no te pertenece' })
-
-    await Group.deleteOne({ _id: groupId })
-    // Opcional: borrar matches asociados -> Match.deleteMany({ groupId })
+  if (!group) return res.status(404).json({ message: 'Grupo no encontrado o no te pertenece' })
+  await Group.deleteOne({ _id: groupId })
     return res.status(200).json({ message: 'Grupo eliminado' })
   } catch (err) {
     return res.status(500).json({ message: 'Error eliminando grupo', error: (err as Error).message })

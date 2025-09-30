@@ -9,7 +9,7 @@ export function getGemini() {
     model: "gemini-1.5-flash",
     generationConfig: {
       responseMimeType: "application/json",
-      temperature: 0.8,   // más diversidad
+  temperature: 0.8,
       topP: 0.95,
     },
   });
