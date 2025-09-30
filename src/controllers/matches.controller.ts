@@ -4,6 +4,7 @@ import { Match as MatchModel } from '../models/match.model.js';
 import { Group as GroupModel } from '../models/group.model.js';
 import { Player as PlayerModel } from '../models/player.model.js';
 import { suggestTeamsWithGemini } from '../ai/suggest-teams.js';
+import { MatchPlayerVote } from '../models/match-vote.model.js';
 
 /* ------------------------ helpers de balance/aleatoriedad ------------------------ */
 
@@ -473,6 +474,19 @@ export async function applyRatings(req: Request, res: Response) {
       return res.status(409).json({ message: 'Ratings ya aplicados' });
     }
 
+    // (Opcional) Si en el futuro se desea forzar que todos voten antes de aplicar, se podría usar
+    // un query param ?requireFull=1 y chequear buildVoteProgress(match). Por ahora se permite aplicar
+    // apenas el owner quiera una vez finalizado el partido.
+    if (req.query.requireFull === '1') {
+      const progress = await buildVoteProgress(match);
+      if (!progress.allVotersCompletedAllPlayers) {
+        return res.status(409).json({
+          message: 'Faltan votos para aplicar ratings (requireFull activo)',
+          progress,
+        });
+      }
+    }
+
     // Reglas básicas:
     // - Base delta por resultado: +10 victoria, -10 derrota, +2 empate
     // - Ajuste por feedback acumulado (up:+2, neutral:0, down:-2) limitado a ±6
@@ -499,7 +513,6 @@ export async function applyRatings(req: Request, res: Response) {
     const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
 
     // Agregar votos desde colección externa
-    const { MatchPlayerVote } = await import('../models/match-vote.model.js');
     const rawVotes = await MatchPlayerVote.aggregate([
       { $match: { matchId: new Types.ObjectId(matchId) } },
       { $group: { _id: '$playerId', score: { $sum: {
@@ -565,5 +578,205 @@ export async function applyRatings(req: Request, res: Response) {
     return res.json({ applied: playerDeltas.length, changes: playerDeltas });
   } catch (err) {
     return res.status(500).json({ message: 'Error aplicando ratings', error: (err as Error).message });
+  }
+}
+
+/* ---------------------------- vote progress helper ---------------------------- */
+
+interface VoteProgress {
+  matchId: string;
+  totalPlayers: number;
+  totalPotentialVoters: number;
+  perPlayer: Array<{
+    playerId: string;
+    votes: { up: number; down: number; neutral: number; total: number };
+    distinctVoters: number;
+  }>;
+  perVoter: Array<{
+    userId: string;
+    votedPlayers: string[];
+    remainingPlayers: string[];
+    completed: boolean;
+  }>;
+  allPlayersHaveAtLeastOneVote: boolean;
+  allVotersCompletedAllPlayers: boolean;
+  ratingApplied: boolean;
+}
+
+async function buildVoteProgress(matchOrId: any): Promise<VoteProgress> {
+  let match = matchOrId;
+  if (!match || !match._id) {
+    match = await MatchModel.findById(matchOrId)
+      .select('teams participants ratingApplied')
+      .lean();
+  }
+  if (!match) throw new Error('match not found');
+
+  // Colección de playerIds: usar players de teams si existen, sino participants
+  const playerIdsSet = new Set<string>();
+  if (Array.isArray(match.teams) && match.teams.length) {
+    for (const t of match.teams) {
+      for (const pid of (t.players ?? [])) {
+        if (pid) playerIdsSet.add(pid.toString());
+      }
+    }
+  } else if (Array.isArray(match.participants)) {
+    for (const pid of match.participants) {
+      if (pid) playerIdsSet.add(pid.toString());
+    }
+  }
+  const playerIds = Array.from(playerIdsSet).map(id => new Types.ObjectId(id));
+
+  // Cargar players para identificar userIds/owners
+  const players = await PlayerModel.find({ _id: { $in: playerIds } })
+    .select('_id userId owner name')
+    .lean();
+  const totalPlayers = players.length;
+  const voterIdsSet = new Set<string>();
+  const playerToVoter: Record<string, string> = {};
+  for (const p of players) {
+    const vid = (p as any).userId?.toString() || (p as any).owner?.toString();
+    if (vid) {
+      voterIdsSet.add(vid);
+      playerToVoter[p._id.toString()] = vid;
+    }
+  }
+
+  const votes = await MatchPlayerVote.find({ matchId: match._id })
+    .select('playerId voterUserId vote')
+    .lean();
+
+  // perPlayer aggregation
+  const perPlayerMap = new Map<string, { up: number; down: number; neutral: number; total: number; voterSet: Set<string>; }>();
+  for (const v of votes) {
+    const pid = v.playerId.toString();
+    let rec = perPlayerMap.get(pid);
+    if (!rec) {
+      rec = { up: 0, down: 0, neutral: 0, total: 0, voterSet: new Set() };
+      perPlayerMap.set(pid, rec);
+    }
+    if (v.vote === 'up') rec.up++;
+    else if (v.vote === 'down') rec.down++;
+    else rec.neutral++;
+    rec.total++;
+    rec.voterSet.add(v.voterUserId.toString());
+  }
+
+  const perPlayer = players.map(p => {
+    const rec = perPlayerMap.get(p._id.toString()) || { up: 0, down: 0, neutral: 0, total: 0, voterSet: new Set<string>() };
+    return {
+      playerId: p._id.toString(),
+      votes: { up: rec.up, down: rec.down, neutral: rec.neutral, total: rec.total },
+      distinctVoters: rec.voterSet.size,
+    };
+  });
+
+  // perVoter progress (cada userId/owner debe votar a todos los players)
+  const voterProgressMap = new Map<string, Set<string>>();
+  for (const v of votes) {
+    let s = voterProgressMap.get(v.voterUserId.toString());
+    if (!s) { s = new Set(); voterProgressMap.set(v.voterUserId.toString(), s); }
+    s.add(v.playerId.toString());
+  }
+  const perVoter: VoteProgress['perVoter'] = Array.from(voterIdsSet).map(uid => {
+    const voted = voterProgressMap.get(uid) || new Set();
+    const votedPlayers = Array.from(voted);
+    const remainingPlayers = players.map(p => p._id.toString()).filter(id => !voted.has(id));
+    return { userId: uid, votedPlayers, remainingPlayers, completed: remainingPlayers.length === 0 };
+  });
+
+  const allPlayersHaveAtLeastOneVote = perPlayer.every(p => p.votes.total > 0);
+  const allVotersCompletedAllPlayers = perVoter.every(v => v.completed);
+
+  return {
+    matchId: match._id.toString(),
+    totalPlayers,
+    totalPotentialVoters: voterIdsSet.size,
+    perPlayer,
+    perVoter,
+    allPlayersHaveAtLeastOneVote,
+    allVotersCompletedAllPlayers,
+    ratingApplied: !!match.ratingApplied,
+  };
+}
+
+/* ----------------------------- vote progress API ------------------------------ */
+
+export async function getVoteProgress(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+    const match = await MatchModel.findById(matchId).select('groupId teams participants ratingApplied owner');
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    // validar que el usuario tiene acceso (owner del match o miembro del grupo)
+    const group = await GroupModel.findById(match.groupId).select('owner members');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+
+    const isOwner = group.owner.toString() === req.userId;
+    // buscar player del usuario
+    const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] }).select('_id').lean();
+    const myPid = myPlayer?._id?.toString();
+    const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
+    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
+
+    const progress = await buildVoteProgress(match);
+    return res.json({ progress });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error obteniendo progreso de votos', error: (err as Error).message });
+  }
+}
+
+/* ------------------------------- my votes status ------------------------------- */
+
+export async function getMyVotes(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+    const match = await MatchModel.findById(matchId).select('groupId teams participants ratingApplied ratingChanges');
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    const group = await GroupModel.findById(match.groupId).select('owner members');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+    const isOwner = group.owner.toString() === req.userId;
+    const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] }).select('_id').lean();
+    const myPid = myPlayer?._id?.toString();
+    const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
+    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
+
+    // lista de players evaluables
+    const playerIdSet = new Set<string>();
+    if (Array.isArray(match.teams) && match.teams.length) {
+      for (const t of match.teams) {
+        for (const pid of (t.players as any[])) if (pid) playerIdSet.add(pid.toString());
+      }
+    } else {
+      for (const pid of match.participants as any[]) if (pid) playerIdSet.add(pid.toString());
+    }
+    const playerIds = Array.from(playerIdSet).map(id => new Types.ObjectId(id));
+
+    const myVotes = await MatchPlayerVote.find({ matchId: match._id, voterUserId: req.userId })
+      .select('playerId vote note')
+      .lean();
+    const myVotedIds = new Set(myVotes.map(v => v.playerId.toString()));
+    const remainingPlayerIds = Array.from(playerIdSet).filter(id => !myVotedIds.has(id));
+    const completed = remainingPlayerIds.length === 0 && playerIdSet.size > 0;
+
+    return res.json({
+  matchId: (match as any)._id.toString(),
+      ratingApplied: !!match.ratingApplied,
+      ratingChanges: match.ratingApplied ? match.ratingChanges : undefined,
+      totalPlayers: playerIdSet.size,
+      myVotes: myVotes.map(v => ({ playerId: v.playerId.toString(), vote: v.vote, note: v.note })),
+      myVotedPlayerIds: Array.from(myVotedIds),
+      remainingPlayerIds,
+      completed,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error obteniendo mis votos', error: (err as Error).message });
   }
 }
