@@ -133,15 +133,26 @@ export async function listMatchesByGroup(req: Request, res: Response) {
 
     // ahora traemos TODOS los matches del grupo
     const matches = await MatchModel.find({ groupId }).lean();
+    // Obtener mis votos por match (un solo query agregando matchId in [...])
+    const matchIds = matches.map(m => m._id);
+    const { MatchPlayerVote } = await import('../models/match-vote.model.js');
+    const votes = await MatchPlayerVote.find({ matchId: { $in: matchIds }, voterUserId: req.userId })
+      .select('matchId playerId')
+      .lean();
+    const votesMap = new Map<string, string[]>();
+    for (const v of votes) {
+      const key = v.matchId.toString();
+      const arr = votesMap.get(key) || [];
+      arr.push(v.playerId.toString());
+      votesMap.set(key, arr);
+    }
     const out = matches.map(m => ({
       ...m,
       isOwnerMatch: m.owner && m.owner.toString() === req.userId,
-      canEdit: m.owner && m.owner.toString() === req.userId, // políticas actuales
+      canEdit: m.owner && m.owner.toString() === req.userId,
+      myVotes: votesMap.get(m._id.toString()) ?? [],
     }));
-    return res.json({
-      matches: out,
-      meta: { isOwner, isMember, canCreate: isOwner, groupId },
-    });
+    return res.json({ matches: out, meta: { isOwner, isMember, canCreate: isOwner, groupId } });
   } catch (err) {
     return res.status(500).json({ message: 'Error listando matches', error: (err as Error).message });
   }
@@ -340,22 +351,29 @@ export async function addFeedback(req: Request, res: Response) {
       return res.status(400).json({ message: 'vote inválido' });
     }
 
-    const match = await MatchModel.findById(matchId).select('participants feedback');
+    const match = await MatchModel.findById(matchId).select('participants teams status ratingApplied');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+    if (match.ratingApplied) return res.status(409).json({ message: 'Ratings ya aplicados' });
 
-    const isParticipant = match.participants.find(p => p.toString() === body.playerId);
-    if (!isParticipant) return res.status(400).json({ message: 'El jugador no participa en el match' });
+    // validar que playerId pertenece: en participants o en teams[*].players
+    const playerIdStr = body.playerId;
+    const inParticipants = match.participants.some(p => p.toString() === playerIdStr);
+    let inTeams = false;
+    for (const t of match.teams) {
+      if ((t as any)?.players?.some?.((pid: any) => pid.toString() === playerIdStr)) { inTeams = true; break; }
+    }
+    if (!inParticipants && !inTeams) {
+      return res.status(400).json({ message: 'El jugador no participa en el match' });
+    }
 
-    match.feedback.push({
-      playerId: new Types.ObjectId(body.playerId),
-      vote: body.vote,
-      note: body.note,
-      by: new Types.ObjectId(req.userId),
-      at: new Date(),
-    } as any);
+    const { MatchPlayerVote } = await import('../models/match-vote.model.js');
+    const voteDoc = await MatchPlayerVote.findOneAndUpdate(
+      { matchId: new Types.ObjectId(matchId), playerId: new Types.ObjectId(playerIdStr), voterUserId: new Types.ObjectId(req.userId!) },
+      { $set: { vote: body.vote, note: body.note, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+      { upsert: true, new: true }
+    ).lean();
 
-    await match.save();
-    return res.json({ message: 'Feedback registrado' });
+    return res.json({ message: 'Feedback registrado', vote: voteDoc });
   } catch (err) {
     return res.status(500).json({ message: 'Error registrando feedback', error: (err as Error).message });
   }
@@ -446,7 +464,7 @@ export async function applyRatings(req: Request, res: Response) {
 
     const match = await MatchModel.findById(matchId)
       .populate('teams.players', 'rating')
-      .select('teams status result feedback ratingApplied ratingChanges participants');
+      .select('teams status result ratingApplied ratingChanges participants');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
     if (match.status !== 'finalized') {
       return res.status(400).json({ message: 'El match debe estar finalizado' });
@@ -480,21 +498,26 @@ export async function applyRatings(req: Request, res: Response) {
     else outcomeA = 'draw';
     const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
 
-    // Preprocesar feedback por jugador
+    // Agregar votos desde colección externa
+    const { MatchPlayerVote } = await import('../models/match-vote.model.js');
+    const rawVotes = await MatchPlayerVote.aggregate([
+      { $match: { matchId: new Types.ObjectId(matchId) } },
+      { $group: { _id: '$playerId', score: { $sum: {
+        $switch: {
+          branches: [
+            { case: { $eq: ['$vote', 'up'] }, then: fbUp },
+            { case: { $eq: ['$vote', 'down'] }, then: fbDown },
+          ],
+          default: 0,
+        }
+      } }, ups: { $sum: { $cond: [{ $eq: ['$vote','up']},1,0]}}, downs:{ $sum:{ $cond:[{ $eq:['$vote','down']},1,0]}}, neutrals:{ $sum:{ $cond:[{ $eq:['$vote','neutral']},1,0]}}, total: { $sum: 1 } } }
+    ]);
     const fbMap = new Map<string, number>();
-    for (const f of match.feedback) {
-      const pid = f.playerId.toString();
-      const prev = fbMap.get(pid) ?? 0;
-      let delta = 0;
-      if (f.vote === 'up') delta = fbUp;
-      else if (f.vote === 'down') delta = fbDown;
-      // neutral = 0
-      fbMap.set(pid, prev + delta);
-    }
-    // clamp
-    for (const [k, v] of fbMap.entries()) {
-      if (v > fbCap) fbMap.set(k, fbCap);
-      else if (v < -fbCap) fbMap.set(k, -fbCap);
+    for (const r of rawVotes) {
+      let val = r.score as number;
+      if (val > fbCap) val = fbCap;
+      if (val < -fbCap) val = -fbCap;
+      fbMap.set(r._id.toString(), val);
     }
 
     const playerDeltas: { playerId: Types.ObjectId; before: number; after: number; delta: number }[] = [];
