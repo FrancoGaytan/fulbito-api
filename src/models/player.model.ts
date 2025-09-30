@@ -8,6 +8,7 @@ export interface PlayerDoc extends Document {
   rating?: number
   gamesPlayed?: number
   userId?: any
+  owner?: any
   createdAt: Date
   updatedAt: Date
 }
@@ -34,6 +35,7 @@ const PlayerSchema = new Schema<PlayerDoc>(
     },
     rating: { type: Number, default: 1000 },
   userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, unique: true, sparse: true },
+  owner: { type: Schema.Types.ObjectId, ref: 'User', index: true },
   gamesPlayed: { type: Number, default: 0, min: 0 },
   },
   {

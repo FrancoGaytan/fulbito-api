@@ -33,9 +33,9 @@ function normalizeIdArray(body: any): string[] {
   return unique.filter(isHexId)
 }
 
-/** Devuelve el _id del Player asociado al usuario logueado (owner = userId) */
+/** Devuelve el _id del Player asociado al usuario logueado (por owner o userId reclamado) */
 async function getMyPlayerId(userId: string): Promise<string | null> {
-  const me = await Player.findOne({ owner: userId }).select('_id').lean()
+  const me = await Player.findOne({ $or: [ { owner: userId }, { userId } ] }).select('_id').lean()
   return me?._id ? String(me._id) : null
 }
 
@@ -58,15 +58,50 @@ export async function createGroup(req: Request, res: Response) {
   }
 }
 
-/** Lista los grupos del usuario (owner) */
+/** Lista grupos donde soy owner o miembro */
 export async function listGroups(req: Request, res: Response) {
   try {
-    const groups = await Group.find({ owner: getUserId(req) }).lean()
-    return res.json(groups)
+    const userId = getUserId(req)
+    const myPlayerId = await getMyPlayerId(userId)
+    const criteria: any = myPlayerId
+      ? { $or: [ { owner: userId }, { members: new Types.ObjectId(myPlayerId) } ] }
+      : { owner: userId }
+    const groups = await Group.find(criteria).lean()
+    // Añadir flags
+    const out = groups.map(g => ({
+      ...g,
+      isOwner: String(g.owner) === userId,
+      isMember: !!(myPlayerId && (g.members as any[]).some(m => String(m) === myPlayerId)),
+      canEdit: String(g.owner) === userId,
+    }))
+    return res.json(out)
   } catch (err) {
     return res
       .status(500)
       .json({ message: 'Error listando grupos', error: (err as Error).message })
+  }
+}
+
+/** Detalle de grupo con flags de acceso */
+export async function getGroupDetail(req: Request, res: Response) {
+  try {
+    const groupId = String(req.params.id)
+    if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
+    const userId = getUserId(req)
+    const myPlayerId = await getMyPlayerId(userId)
+    const group = await Group.findById(groupId).lean()
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' })
+    const isOwner = String(group.owner) === userId
+    const isMember = !!(myPlayerId && (group.members as any[]).some(m => String(m) === myPlayerId))
+    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' })
+    return res.json({
+      ...group,
+      isOwner,
+      isMember,
+      canEdit: isOwner,
+    })
+  } catch (err) {
+    return res.status(500).json({ message: 'Error obteniendo grupo', error: (err as Error).message })
   }
 }
 

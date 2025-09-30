@@ -118,14 +118,30 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     if (!groupId || !Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ message: 'Id inválido' });
     }
-
-    const group = await GroupModel.findById(groupId).select('owner');
+    const group = await GroupModel.findById(groupId).select('owner members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
-    if (group.owner.toString() !== req.userId)
-      return res.status(403).json({ message: 'Sin permiso' });
 
-    const matches = await MatchModel.find({ groupId, owner: req.userId }).lean();
-    return res.json(matches);
+    // obtener player del usuario (owner o userId reclamado)
+    const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] })
+      .select('_id')
+      .lean();
+    const myPid = myPlayer?._id ? myPlayer._id.toString() : null;
+
+    const isOwner = group.owner.toString() === req.userId;
+    const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
+    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
+
+    // ahora traemos TODOS los matches del grupo
+    const matches = await MatchModel.find({ groupId }).lean();
+    const out = matches.map(m => ({
+      ...m,
+      isOwnerMatch: m.owner && m.owner.toString() === req.userId,
+      canEdit: m.owner && m.owner.toString() === req.userId, // políticas actuales
+    }));
+    return res.json({
+      matches: out,
+      meta: { isOwner, isMember, canCreate: isOwner, groupId },
+    });
   } catch (err) {
     return res.status(500).json({ message: 'Error listando matches', error: (err as Error).message });
   }
