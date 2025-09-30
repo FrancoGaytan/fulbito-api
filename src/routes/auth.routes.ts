@@ -13,6 +13,7 @@ router.post('/register', async (req, res, next) => {
     const { email, password } = req.body as { email: string; password: string };
     if (!email || !password) return res.status(400).json({ message: 'email y password requeridos' });
 
+    // Chequeo optimista (evita consulta extra si hay race)
     const exists = await User.findOne({ email });
     if (exists) return res.status(409).json({ message: 'Email ya registrado' });
 
@@ -21,7 +22,13 @@ router.post('/register', async (req, res, next) => {
 
     const token = jwt.sign({ sub: user.id, email }, JWT_SECRET, { expiresIn: JWT_EXP });
     res.status(201).json({ token });
-  } catch (err) { next(err); }
+  } catch (err: any) {
+    // Manejo de condición de carrera -> índice único Mongo
+    if (err && err.code === 11000) {
+      return res.status(409).json({ message: 'Email ya registrado' });
+    }
+    next(err);
+  }
 });
 
 router.post('/login', async (req, res, next) => {
