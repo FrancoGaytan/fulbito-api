@@ -64,11 +64,22 @@ export async function createMatch(req: Request, res: Response) {
         : [];
     const partIdsClean = [...new Set(partIds.map(String))];
 
-    // grupo existe y es del usuario
+    // grupo existe y usuario debe ser owner o miembro (jugador dentro de members)
     const group = await GroupModel.findById(groupId).select('owner members');
     if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
-    if (group.owner.toString() !== req.userId) {
-      return res.status(403).json({ message: 'No podés usar ese grupo' });
+
+    const isOwner = group.owner.toString() === req.userId;
+    let isMember = false;
+    if (!isOwner) {
+      const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] })
+        .select('_id')
+        .lean();
+      if (myPlayer?._id) {
+        isMember = (group.members ?? []).some(m => m.toString() === myPlayer._id.toString());
+      }
+    }
+    if (!isOwner && !isMember) {
+      return res.status(403).json({ message: 'No pertenecés al grupo' });
     }
 
     // si hay participantes, deben pertenecer al grupo
@@ -153,7 +164,7 @@ export async function listMatchesByGroup(req: Request, res: Response) {
       canEdit: m.owner && m.owner.toString() === req.userId,
       myVotes: votesMap.get(m._id.toString()) ?? [],
     }));
-    return res.json({ matches: out, meta: { isOwner, isMember, canCreate: isOwner, groupId } });
+  return res.json({ matches: out, meta: { isOwner, isMember, canCreate: (isOwner || isMember), groupId } });
   } catch (err) {
     return res.status(500).json({ message: 'Error listando matches', error: (err as Error).message });
   }
