@@ -475,7 +475,10 @@ export async function applyRatings(req: Request, res: Response) {
     const baseDraw = 2;
     const fbUp = 2;
     const fbDown = -2;
-  const fbCap = 6;
+    // FEEDBACK CAP: si querés limitar la influencia de los votos por jugador, definí FEEDBACK_CAP (ej 6).
+    // Si no se define (o es vacío), no se aplica límite y el valor puede crecer según cantidad de votos.
+    const fbCapEnv = process.env.FEEDBACK_CAP;
+    const fbCap = fbCapEnv !== undefined && fbCapEnv !== '' && !Number.isNaN(Number(fbCapEnv)) ? Number(fbCapEnv) : null;
 
     const teamA = match.teams[0];
     const teamB = match.teams[1];
@@ -505,9 +508,11 @@ export async function applyRatings(req: Request, res: Response) {
     ]);
     const fbMap = new Map<string, number>();
     for (const r of rawVotes) {
-      let val = r.score as number;
-      if (val > fbCap) val = fbCap;
-      if (val < -fbCap) val = -fbCap;
+      let val = r.score as number; // suma (up=+2, down=-2, neutral=0) * cantidad de votos
+      if (fbCap !== null && Number.isFinite(fbCap)) {
+        if (val > fbCap) val = fbCap;
+        if (val < -fbCap) val = -fbCap;
+      }
       fbMap.set(r._id.toString(), val);
     }
 
@@ -752,5 +757,44 @@ export async function getMyVotes(req: Request, res: Response) {
     });
   } catch (err) {
     return res.status(500).json({ message: 'Error obteniendo mis votos', error: (err as Error).message });
+  }
+}
+
+/* ------------------------------ update result -------------------------------- */
+
+// Permite corregir el resultado de un match ya finalizado SI todavía no se aplicaron ratings.
+// Mantiene el finalizedAt original para no alterar el historial.
+export async function updateResult(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+    const { scoreA, scoreB } = req.body as { scoreA?: unknown; scoreB?: unknown };
+    const a = Number(scoreA);
+    const b = Number(scoreB);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      return res.status(400).json({ message: 'Scores inválidos' });
+    }
+
+    const match = await MatchModel.findById(matchId).select('status result teams ratingApplied');
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+    if (match.status !== 'finalized') {
+      return res.status(409).json({ message: 'El match no está finalizado' });
+    }
+    if (match.ratingApplied) {
+      return res.status(409).json({ message: 'No se puede modificar: ratings ya aplicados' });
+    }
+
+    const finalizedAt = match.result?.finalizedAt || new Date();
+    match.result = { scoreA: a, scoreB: b, finalizedAt } as any;
+    if (Array.isArray(match.teams) && match.teams.length >= 2) {
+      if (match.teams[0]) match.teams[0].score = a;
+      if (match.teams[1]) match.teams[1].score = b;
+    }
+    await match.save();
+    return res.json({ message: 'Resultado actualizado', match });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error actualizando resultado', error: (err as Error).message });
   }
 }

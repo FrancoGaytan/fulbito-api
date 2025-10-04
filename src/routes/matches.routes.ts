@@ -19,6 +19,8 @@ router.post('/:id/feedback', requireAuth, ctrl.addFeedback); // cualquier miembr
 router.get('/:id/vote-progress', requireAuth, ctrl.getVoteProgress);
 router.get('/:id/my-votes', requireAuth, ctrl.getMyVotes);
 router.post('/:id/finalize', requireAuth, enforceOwnership(Match, 'id'), ctrl.finalizeMatch);
+router.patch('/:id/result', requireAuth, enforceOwnership(Match, 'id'), ctrl.updateResult);
+router.post('/:id/result', requireAuth, enforceOwnership(Match, 'id'), ctrl.updateResult);
 router.delete('/:id', requireAuth, enforceOwnership(Match, 'id'), ctrl.deleteMatch);
 router.post('/:id/apply-ratings', requireAuth, enforceOwnership(Match, 'id'), ctrl.applyRatings);
 

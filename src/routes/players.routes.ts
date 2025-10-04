@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { Player } from '../models/player.model.js'
+import { Match } from '../models/match.model.js'
 import { normalizeAbilitiesInput } from '../utils/abilities.js'
 import { deletePlayer } from '../controllers/players.controller.js'
 
@@ -41,7 +42,41 @@ router.get('/players/:id', async (req, res, next) => {
     if (!id) return res.status(400).json({ message: 'id requerido' })
     const player = await Player.findById(id).lean({ getters: true })
     if (!player) return res.status(404).json({ message: 'player not found' })
-    return res.json(player)
+
+    // Agregar estadísticas dinámicas (wins/losses/draws) sin modificar el schema.
+    // Contamos sólo partidos FINALIZADOS donde el jugador estuvo en teams y tienen score.
+    try {
+      const playerObjId = (player as any)._id
+      const agg = await Match.aggregate([
+        { $match: { 'teams.players': playerObjId, status: 'finalized', 'teams.0.score': { $exists: true } } },
+        { $project: { teams: 1 } },
+        { $addFields: {
+          playerTeam: { $first: { $filter: { input: '$teams', as: 't', cond: { $in: [ playerObjId, '$$t.players' ] } } } },
+          otherTeam: { $first: { $filter: { input: '$teams', as: 't', cond: { $not: { $in: [ playerObjId, '$$t.players' ] } } } } }
+        } },
+        { $addFields: {
+          outcome: {
+            $switch: {
+              branches: [
+                { case: { $gt: [ '$playerTeam.score', '$otherTeam.score' ] }, then: 'win' },
+                { case: { $lt: [ '$playerTeam.score', '$otherTeam.score' ] }, then: 'lose' },
+              ],
+              default: 'draw'
+            }
+          }
+        } },
+        { $group: {
+          _id: null,
+          wins: { $sum: { $cond: [ { $eq: [ '$outcome', 'win' ] }, 1, 0 ] } },
+          losses: { $sum: { $cond: [ { $eq: [ '$outcome', 'lose' ] }, 1, 0 ] } },
+          draws: { $sum: { $cond: [ { $eq: [ '$outcome', 'draw' ] }, 1, 0 ] } },
+        } },
+      ])
+      const stats = agg[0] || { wins: 0, losses: 0, draws: 0 }
+      return res.json({ ...player, stats: { wins: stats.wins, losses: stats.losses, draws: stats.draws, total: stats.wins + stats.losses + stats.draws } })
+    } catch (statsErr) {
+      return res.json({ ...player, stats: { wins: 0, losses: 0, draws: 0, total: 0, error: 'stats_failed' } })
+    }
   } catch (e) { next(e) }
 })
 
