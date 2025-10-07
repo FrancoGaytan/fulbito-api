@@ -141,13 +141,14 @@ export async function addPlayersToGroup(req: Request, res: Response) {
       .lean()
     const ownedSet = new Set(owned.map(p => String(p._id)))
 
-    const notOwned = ids.filter(id => !ownedSet.has(id))
+    //removed to allow adding any player, not just owned
+ /*    const notOwned = ids.filter(id => !ownedSet.has(id))
     if (notOwned.length) {
       return res.status(403).json({
         message: 'Alguno de los jugadores no te pertenece',
         notOwned,
       })
-    }
+    } */
 
     const updated = await Group.findByIdAndUpdate(
       groupId,
