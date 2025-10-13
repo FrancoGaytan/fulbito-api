@@ -26,7 +26,7 @@ Reglas y criterios:
 1. Cada jugador debe aparecer EXACTAMENTE una vez en alguno de los dos equipos.
 2. El tamaño de los equipos debe diferir como máximo en 1 jugador.
 3. Minimiza la diferencia absoluta de la suma de ratings (ideal < 5% del rating total de un equipo; si no se puede, el mínimo posible).
-4. Usa abilities (si existen) solo como criterio secundario para repartir jugadores con ratings similares.
+4. Usa abilities (si existen) solo como criterio primario para repartir jugadores con abilities similares. Pero tambien intenta balancear el rating total de ambos equipos.
 5. No inventes ni modifiques ids, usa exactamente los provistos.
 6. No agregues comentarios, explicación ni envoltorios (sin Markdown, sin texto extra).
 7. Formato de salida ESTRICTO (JSON sin espacios extra fuera del objeto raíz):
