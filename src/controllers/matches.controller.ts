@@ -206,6 +206,8 @@ export async function generateTeams(req: Request, res: Response) {
       req.query.ai === '1' || String(process.env.USE_GEMINI_TEAMS).toLowerCase() === 'true';
     const seed =
       Number.parseInt(String(req.query.seed ?? '')) || Math.floor(Math.random() * 1e9);
+    const debug = req.query.debug === '1';
+    const raw = req.query.raw === '1';
 
     if (!matchId || !Types.ObjectId.isValid(matchId)) {
       return res.status(400).json({ message: 'Id inválido' });
@@ -230,12 +232,20 @@ export async function generateTeams(req: Request, res: Response) {
     const ids = participants.map(p => p.id);
     const idsSet = new Set(ids);
 
-    let teamA: string[] = [];
-    let teamB: string[] = [];
+  let teamA: string[] = [];
+  let teamB: string[] = [];
+  let aiTried = false;
+  let aiSucceeded = false;
+  let aiError: string | null = null;
+  let aiRawResponse: any = null;
 
+    let originalAiTeams: { name: string; players: string[] }[] | null = null;
     if (useAI && process.env.GEMINI_API_KEY) {
       try {
+        aiTried = true;
         const ai = await suggestTeamsWithGemini({ participants, seed });
+        aiRawResponse = ai;
+        originalAiTeams = ai.teams.map(t => ({ name: t.name, players: [...t.players] }));
         const find = (L: 'A' | 'B') => ai.teams.find(t => (t.name || '').toUpperCase() === L);
         const a = find('A') ?? ai.teams[0];
         const b = find('B') ?? ai.teams[1];
@@ -299,7 +309,98 @@ export async function generateTeams(req: Request, res: Response) {
             else { teamB.push(p.id); sumB += p.rating; }
           }
         }
+        aiSucceeded = true;
+        // Rebalance cluster de top ratings si no es raw
+        if (!raw) {
+          const ratingsMap2 = new Map(participants.map(p => [p.id, p.rating]));
+          const sortedAll = [...participants].sort((x, y) => y.rating - x.rating);
+          const topCount = Math.max(2, Math.ceil(sortedAll.length * 0.2));
+          const topIds = new Set(sortedAll.slice(0, topCount).map(p => p.id));
+          const countTop = (arr: string[]) => arr.reduce((acc, id) => acc + (topIds.has(id) ? 1 : 0), 0);
+          const topA = countTop(teamA);
+          const topB = countTop(teamB);
+          const maxAllowed = Math.ceil(topCount / 2);
+          const overloaded: 'A' | 'B' | null = topA > maxAllowed ? 'A' : topB > maxAllowed ? 'B' : null;
+          let clusterRebalanced = false;
+          if (overloaded) {
+            const from = overloaded === 'A' ? teamA : teamB;
+            const to = overloaded === 'A' ? teamB : teamA;
+            const topsInFrom = from.filter(id => topIds.has(id));
+            const nonTopInTo = to.filter(id => !topIds.has(id));
+            const sum2 = (arr: string[]) => arr.reduce((acc, id) => acc + (ratingsMap2.get(id) || 1000), 0);
+            let sumA2 = sum2(teamA);
+            let sumB2 = sum2(teamB);
+            const avg2 = (sumA2 + sumB2) / 2;
+            const threshold2 = Math.max(30, avg2 * 0.05);
+            let bestSwap: { give: string; receive: string; newDiff: number } | null = null;
+            for (const give of topsInFrom) {
+              const rg = ratingsMap2.get(give) || 1000;
+              for (const receive of nonTopInTo) {
+                const rr = ratingsMap2.get(receive) || 1000;
+                const newSumA = overloaded === 'A' ? sumA2 - rg + rr : sumA2 + rg - rr;
+                const newSumB = overloaded === 'A' ? sumB2 + rg - rr : sumB2 - rg + rr;
+                const newDiff = Math.abs(newSumA - newSumB);
+                if (newDiff <= threshold2 && (!bestSwap || newDiff < bestSwap.newDiff)) {
+                  bestSwap = { give, receive, newDiff };
+                }
+              }
+            }
+            if (bestSwap) {
+              if (overloaded === 'A') {
+                teamA = teamA.map(id => (id === bestSwap!.give ? bestSwap!.receive : id));
+                teamB = teamB.map(id => (id === bestSwap!.receive ? bestSwap!.give : id));
+              } else {
+                teamB = teamB.map(id => (id === bestSwap!.give ? bestSwap!.receive : id));
+                teamA = teamA.map(id => (id === bestSwap!.receive ? bestSwap!.give : id));
+              }
+              clusterRebalanced = true;
+            }
+            if (debug) {
+              (aiRawResponse as any)._meta = {
+                ...((aiRawResponse as any)._meta || {}),
+                topCount,
+                topA,
+                topB,
+                maxAllowed,
+                clusterRebalanced,
+              };
+            }
+          }
+        }
+        // Si se solicita raw=1 retornamos inmediatamente el resultado tal cual vino (solo limpiando ids duplicados/extraños)
+        if (raw) {
+          const rawTeamsCleaned = [a, b].map(t => {
+            const safe = t || { name: '', players: [] as string[] };
+            const upper = (safe.name || '').toUpperCase();
+            const name = upper === 'A' ? 'A' : upper === 'B' ? 'B' : safe.name;
+            const players = (safe.players || []).filter((pid, idx, arr) => idsSet.has(pid) && arr.indexOf(pid) === idx);
+            return { name, players };
+          });
+          // Mapear al formato final sin post-balance
+          match.teams = [
+            { name: 'A', players: (rawTeamsCleaned.find(t => t.name === 'A')?.players || []).map(id => new Types.ObjectId(id)), score: 0 },
+            { name: 'B', players: (rawTeamsCleaned.find(t => t.name === 'B')?.players || []).map(id => new Types.ObjectId(id)), score: 0 },
+          ];
+          await match.save();
+          return res.json({
+            teams: match.teams,
+            debug: debug ? {
+              seed,
+              useAIRequested: useAI,
+              geminiApiKeyPresent: !!process.env.GEMINI_API_KEY,
+              aiTried,
+              aiSucceeded,
+              aiError,
+              aiPrompt: (aiRawResponse as any)?._meta?.prompt,
+              aiRawText: (aiRawResponse as any)?._meta?.rawText,
+              originalAiTeams,
+              rawMode: true,
+              teamSizes: { A: (match.teams[0]?.players?.length) || 0, B: (match.teams[1]?.players?.length) || 0 },
+            } : undefined,
+          });
+        }
       } catch (e) {
+        aiError = (e as Error).message;
         const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating }));
         const fb = generateBalancedTeams(shuffled);
         teamA = fb.teamA;
@@ -318,7 +419,25 @@ export async function generateTeams(req: Request, res: Response) {
     ];
     await match.save();
 
-  return res.json({ teams: match.teams });
+    if (debug) {
+      return res.json({
+        teams: match.teams,
+        debug: {
+          seed,
+          useAIRequested: useAI,
+          geminiApiKeyPresent: !!process.env.GEMINI_API_KEY,
+          aiTried,
+          aiSucceeded,
+          aiError,
+          aiRawResponse,
+          aiPrompt: aiRawResponse?._meta?.prompt,
+          aiRawText: aiRawResponse?._meta?.rawText,
+          teamSizes: { A: teamA.length, B: teamB.length },
+        },
+      });
+    }
+
+    return res.json({ teams: match.teams });
   } catch (err) {
     return res.status(500).json({
       message: 'Error generando equipos',

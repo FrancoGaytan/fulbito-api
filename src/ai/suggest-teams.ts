@@ -6,7 +6,11 @@ const Out = z.object({
     .array(z.object({ name: z.string(), players: z.array(z.string()) }))
     .length(2),
 });
-export type AiTeams = z.infer<typeof Out>;
+
+export interface AiTeams {
+  teams: { name: string; players: string[] }[];
+  _meta?: { prompt: string; rawText: string; modelUsed?: string; triedModels?: string[] };
+}
 
 export async function suggestTeamsWithGemini(input: {
   participants: Array<{
@@ -17,31 +21,66 @@ export async function suggestTeamsWithGemini(input: {
   }>;
   seed?: number;
 }): Promise<AiTeams> {
-  const model = getGemini();
+  const slim = input.participants.map(p => ({
+    id: p.id,
+    rating: p.rating,
+    abilityScore: Object.values(p.abilities || {}).reduce((a, v) => a + (typeof v === 'number' ? v : 0), 0),
+  }));
   const prompt = `
 Eres un organizador de partidos de fútbol.
-Objetivo: formar 2 equipos ("A" y "B") lo más equilibrados posible considerando principalmente el campo 'rating'.
+Objetivo: formar 2 equipos ("A" y "B") muy equilibrados usando principalmente 'rating' y secundariamente 'abilityScore'.
 
-Reglas y criterios:
-1. Cada jugador debe aparecer EXACTAMENTE una vez en alguno de los dos equipos.
-2. El tamaño de los equipos debe diferir como máximo en 1 jugador.
-3. Usa abilities (si existen) como criterio primario para repartir jugadores con abilities similares, intenta que los mejores jugadores estén en equipos diferentes analizando stat por stat.
-4. Minimiza la diferencia absoluta de la suma de ratings (ideal < 5% del rating total de un equipo; si no se puede, el mínimo posible).
-5. No inventes ni modifiques ids, usa exactamente los provistos.
-6. No agregues comentarios, explicación ni envoltorios (sin Markdown, sin texto extra).
-7. Formato de salida ESTRICTO (JSON sin espacios extra fuera del objeto raíz):
-{"teams":[{"name":"A","players":["<id>","<id>"]},{"name":"B","players":["<id>","<id>"]}]}
+Datos:
+PARTICIPANTES=${JSON.stringify(slim)}
+SEMILLA=${input.seed ?? 'none'}
 
-Semilla (puede influir en soluciones alternativas con balance aceptable): ${input.seed ?? 'none'}
+Definiciones:
+TopRating = jugadores en el 20% superior por rating.
+TopAbility = jugadores en el 20% superior por abilityScore.
 
-Listado de jugadores (rating y abilities):
-${JSON.stringify(input.participants, null, 2)}
+Reglas estrictas:
+1. Cada jugador aparece EXACTAMENTE una vez en A o B.
+2. Diferencia de cantidad entre equipos ≤ 1.
+3. No concentres más de ceil(|TopRating|/2) jugadores de TopRating en un solo equipo. Igual para TopAbility.
+4. Minimiza |sumaRating(A) - sumaRating(B)| y luego |sumaAbility(A) - sumaAbility(B)|.
+5. Si dos asignaciones son similares, elige la que dispersa mejor los 3 ratings más altos.
+6. Salida SOLO JSON EXACTO sin comentarios ni texto adicional:
+{"teams":[{"name":"A","players":["<id>","<id>", ...]},{"name":"B","players":["<id>","<id>", ...]}]}
+7. Solo usa IDs provistos y exactamente dos objetos de equipo.
 `.trim();
 
-  const resp = await model.generateContent(prompt);
-  const text = resp.response.text();
-  const json = JSON.parse(text);
-  const valid = Out.safeParse(json);
-  if (!valid.success) throw new Error('AI_SCHEMA_ERROR');
-  return valid.data;
+  const tried: string[] = [];
+  const candidates = [ process.env.GEMINI_MODEL || 'gemini-pro-latest' ];
+  let lastError: Error | null = null;
+  let rawText = '';
+  let usedModel = '';
+  for (const m of candidates) {
+    if (tried.includes(m)) continue;
+    tried.push(m);
+    try {
+      const model = getGemini(m);
+      const resp = await model.generateContent(prompt);
+      rawText = resp.response.text();
+      usedModel = m;
+      lastError = null;
+      break;
+    } catch (e) {
+      lastError = e as Error;
+    }
+  }
+  if (lastError && !rawText) {
+    throw lastError;
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (e) {
+    throw new Error('AI_JSON_PARSE_ERROR');
+  }
+  const valid = Out.safeParse(parsed);
+  if (!valid.success) {
+    throw new Error('AI_SCHEMA_ERROR');
+  }
+  return { teams: valid.data.teams, _meta: { prompt, rawText, modelUsed: usedModel, triedModels: tried } };
 }
