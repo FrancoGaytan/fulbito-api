@@ -25,8 +25,8 @@ Objetivo: formar 2 equipos ("A" y "B") lo más equilibrados posible considerando
 Reglas y criterios:
 1. Cada jugador debe aparecer EXACTAMENTE una vez en alguno de los dos equipos.
 2. El tamaño de los equipos debe diferir como máximo en 1 jugador.
-3. Minimiza la diferencia absoluta de la suma de ratings (ideal < 5% del rating total de un equipo; si no se puede, el mínimo posible).
-4. Usa abilities (si existen) solo como criterio primario para repartir jugadores con abilities similares. Pero tambien intenta balancear el rating total de ambos equipos.
+3. Usa abilities (si existen) como criterio primario para repartir jugadores con abilities similares, intenta que los mejores jugadores estén en equipos diferentes analizando stat por stat.
+4. Minimiza la diferencia absoluta de la suma de ratings (ideal < 5% del rating total de un equipo; si no se puede, el mínimo posible).
 5. No inventes ni modifiques ids, usa exactamente los provistos.
 6. No agregues comentarios, explicación ni envoltorios (sin Markdown, sin texto extra).
 7. Formato de salida ESTRICTO (JSON sin espacios extra fuera del objeto raíz):
