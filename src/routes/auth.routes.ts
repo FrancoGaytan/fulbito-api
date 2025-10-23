@@ -57,9 +57,15 @@ router.post('/request-reset-code', async (req, res, next) => {
       user.resetCodeExpires = minutesFromNow(ttlMin);
       user.passwordResetSessionToken = null;
       await user.save();
+      // Ambiente amigable: devolvemos SIEMPRE el código directamente para usarlo en el front.
+      // Para volver al modo seguro, reemplazar el return siguiente por el bloque comentado abajo.
+  return res.status(200).json({ ok: true, code, devCode: code, expiresMinutes: ttlMin });
+
+      /* MODO SEGURO (no exponer el código, solo mostrar mensaje genérico)
       const payload: any = { ok: true, message: 'If the email exists, a reset code was generated.' };
-      if (process.env.NODE_ENV !== 'production') payload.devCode = code;
+      if (process.env.NODE_ENV !== 'production') payload.devCode = code; // visible solo en dev
       return res.status(200).json(payload);
+      */
     }
     return res.status(200).json({ ok: true, message: 'If the email exists, a reset code was generated.' });
   } catch (err) { next(err); }
