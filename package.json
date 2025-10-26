@@ -10,7 +10,8 @@
     "start": "node --enable-source-maps --experimental-specifier-resolution=node dist/server.js",
     "lint": "eslint . --ext .ts",
     "format": "prettier -w .",
-    "migrate:abilities": "ts-node scripts/migrate-abilities.ts"
+  "migrate:abilities": "ts-node scripts/migrate-abilities.ts",
+  "seed:multi": "tsx scripts/seed-multigroup.ts"
   },
   "keywords": [],
   "author": "",

@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { Match as MatchModel } from '../models/match.model.js';
 import { Group as GroupModel } from '../models/group.model.js';
 import { Player as PlayerModel } from '../models/player.model.js';
+import { GroupMembership } from '../models/groupMembership.model.js';
 import { suggestTeamsWithGemini } from '../ai/suggest-teams.js';
 import { MatchPlayerVote } from '../models/match-vote.model.js';
 
@@ -215,20 +216,33 @@ export async function generateTeams(req: Request, res: Response) {
 
     const match = await MatchModel.findById(matchId)
       .populate('participants', 'name rating abilities')
-      .select('participants teams status');
+      .select('participants teams status groupId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
 
-    const participants = (match.participants as any[]).map(p => ({
-      id: p._id.toString(),
-      name: p.name,
-      rating: typeof p.rating === 'number' ? p.rating : 1000,
-      abilities: ((): Record<string, number> => {
-        const a = p.abilities;
-        if (!a) return {};
-        if (typeof a.entries === 'function') return Object.fromEntries(a.entries());
-        return a;
-      })(),
-    }));
+    // Intentar cargar ratings contextuales por grupo (GroupMembership)
+    let membershipMap = new Map<string, { rating: number }>();
+    if ((match as any).groupId) {
+      const mids = (match.participants as any[]).map(p => p._id);
+      const memberships = await GroupMembership.find({ groupId: (match as any).groupId, playerId: { $in: mids } })
+        .select('playerId rating')
+        .lean();
+      membershipMap = new Map(memberships.map(m => [m.playerId.toString(), { rating: m.rating }]));
+    }
+    const participants = (match.participants as any[]).map(p => {
+      const baseRating = typeof p.rating === 'number' ? p.rating : 1000;
+      const contextual = membershipMap.get(p._id.toString());
+      return {
+        id: p._id.toString(),
+        name: p.name,
+        rating: contextual ? contextual.rating : baseRating,
+        abilities: ((): Record<string, number> => {
+          const a = p.abilities;
+          if (!a) return {};
+          if (typeof a.entries === 'function') return Object.fromEntries(a.entries());
+          return a;
+        })(),
+      };
+    });
     const ids = participants.map(p => p.id);
     const idsSet = new Set(ids);
 
@@ -507,7 +521,7 @@ export async function finalizeMatch(req: Request, res: Response) {
       return res.status(400).json({ message: 'Scores inválidos' });
     }
 
-    const match = await MatchModel.findById(matchId).select('teams status result');
+  const match = await MatchModel.findById(matchId).select('teams status result groupId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
 
     match.status = 'finalized';
@@ -523,16 +537,43 @@ export async function finalizeMatch(req: Request, res: Response) {
     try {
       const playerIdsSet = new Set<string>();
       for (const t of match.teams) {
-        for (const pid of (t.players as any[])) {
-          if (pid) playerIdsSet.add(pid.toString());
-        }
+        for (const pid of (t.players as any[])) if (pid) playerIdsSet.add(pid.toString());
       }
       if (playerIdsSet.size) {
         const ids = Array.from(playerIdsSet).map(id => new Types.ObjectId(id));
-        const { Player } = await import('../models/player.model.js');
-        await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
+        if ((match as any).groupId) {
+          // Determinar outcome por equipo para incrementar wins/losses/draws
+          let outcomeA: 'win' | 'lose' | 'draw' = 'draw';
+          if (scoreA > scoreB) outcomeA = 'win'; else if (scoreA < scoreB) outcomeA = 'lose';
+          const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
+          const teamAPlayers = new Set((match.teams[0]?.players as any[]).map(p => p.toString()))
+          const teamBPlayers = new Set((match.teams[1]?.players as any[]).map(p => p.toString()))
+          const bulk = ids.map(pid => {
+            const pidStr = pid.toString();
+            let inc: any = { gamesPlayed: 1 };
+            if (teamAPlayers.has(pidStr)) {
+              if (outcomeA === 'win') inc.wins = 1; else if (outcomeA === 'lose') inc.losses = 1; else inc.draws = 1;
+            } else if (teamBPlayers.has(pidStr)) {
+              if (outcomeB === 'win') inc.wins = 1; else if (outcomeB === 'lose') inc.losses = 1; else inc.draws = 1;
+            }
+            return {
+              updateOne: {
+                filter: { groupId: (match as any).groupId, playerId: pid },
+                update: { $inc: inc },
+                upsert: true,
+              },
+            };
+          });
+          await GroupMembership.bulkWrite(bulk as any);
+        } else {
+          const { Player } = await import('../models/player.model.js');
+          await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
+        }
       }
     } catch (e) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[finalizeMatch] error incrementando stats membership:', (e as Error).message);
+      }
     }
     return res.json(match);
   } catch (err) {
@@ -570,7 +611,7 @@ export async function applyRatings(req: Request, res: Response) {
 
     const match = await MatchModel.findById(matchId)
       .populate('teams.players', 'rating')
-      .select('teams status result ratingApplied ratingChanges participants');
+      .select('teams status result ratingApplied ratingChanges participants groupId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
     if (match.status !== 'finalized') {
       return res.status(400).json({ message: 'El match debe estar finalizado' });
@@ -636,12 +677,30 @@ export async function applyRatings(req: Request, res: Response) {
     }
 
     const playerDeltas: { playerId: Types.ObjectId; before: number; after: number; delta: number }[] = [];
-    const playerUpdates: { _id: Types.ObjectId; rating: number }[] = [];
+    const membershipUpdates: { filter: any; update: any }[] = [];
+    const directPlayerUpdates: { _id: Types.ObjectId; rating: number }[] = []; // fallback si no hay groupId
+
+    const hasGroupContext = !!(match as any).groupId;
+    let membershipCache = new Map<string, { _id: Types.ObjectId; rating: number }>();
+    if (hasGroupContext) {
+      const allPlayerIds: Types.ObjectId[] = [];
+      for (const t of match.teams) {
+        for (const p of (t.players as any[])) if (p && p._id) allPlayerIds.push(p._id);
+      }
+      const memberships = await GroupMembership.find({ groupId: (match as any).groupId, playerId: { $in: allPlayerIds } })
+        .select('playerId rating')
+        .lean();
+      membershipCache = new Map(memberships.map(m => [m.playerId.toString(), { _id: m.playerId as any, rating: m.rating }]));
+    }
 
     const applyForTeam = (team: any, outcome: 'win' | 'lose' | 'draw') => {
       for (const p of team.players as any[]) {
         if (!p || !p._id) continue;
-        const before = typeof p.rating === 'number' ? p.rating : 1000;
+        let before = typeof p.rating === 'number' ? p.rating : 1000;
+        if (hasGroupContext) {
+          const mem = membershipCache.get(p._id.toString());
+          if (mem) before = mem.rating;
+        }
         let base = outcome === 'win' ? baseWin : outcome === 'lose' ? baseLose : baseDraw;
         const fb = fbMap.get(p._id.toString()) ?? 0;
         let total = base + fb;
@@ -651,19 +710,29 @@ export async function applyRatings(req: Request, res: Response) {
         if (total < -40) total = -40;
   const after = Math.max(500, before + total);
         playerDeltas.push({ playerId: p._id, before, after, delta: after - before });
-        playerUpdates.push({ _id: p._id, rating: after });
+        if (hasGroupContext) {
+          membershipUpdates.push({
+            filter: { groupId: (match as any).groupId, playerId: p._id },
+            update: { $set: { rating: after } },
+          });
+        } else {
+          directPlayerUpdates.push({ _id: p._id, rating: after });
+        }
       }
     };
 
     applyForTeam(teamA, outcomeA);
     applyForTeam(teamB, outcomeB);
 
-    if (playerUpdates.length) {
-      const bulk = playerUpdates.map(u => ({
-        updateOne: {
-          filter: { _id: u._id },
-          update: { $set: { rating: u.rating } },
-        },
+    if (hasGroupContext && membershipUpdates.length) {
+      // Ejecutar bulk en GroupMembership. Si falta alguna membership (no encontrada), crearla on upsert.
+      const bulk = membershipUpdates.map(m => ({
+        updateOne: { filter: m.filter, update: m.update, upsert: true },
+      }));
+      await GroupMembership.bulkWrite(bulk as any);
+    } else if (!hasGroupContext && directPlayerUpdates.length) {
+      const bulk = directPlayerUpdates.map(u => ({
+        updateOne: { filter: { _id: u._id }, update: { $set: { rating: u.rating } } },
       }));
       const { Player } = await import('../models/player.model.js');
       await Player.bulkWrite(bulk as any);
