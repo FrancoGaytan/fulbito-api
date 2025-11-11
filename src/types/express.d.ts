@@ -11,6 +11,13 @@ declare global {
     interface Request {
       userId?: string;
       userEmail?: string;
+      groupContext?: {
+        groupId: string;
+        isOwner: boolean;
+        isMember: boolean;
+        myPlayerId: string | null;
+        membership: any;
+      };
     }
   }
 }

@@ -12,6 +12,14 @@ const toObjectId = (s: string) => new Types.ObjectId(s)
 
 function getUserId(req: Request): string { return (req as any).userId as string }
 
+/** Codigo corto alfanumérico para join */
+function generateJoinCode(len = 8): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let out = ''
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)]
+  return out
+}
+
 /** Normaliza arreglos de IDs desde distintas claves y/o body como string */
 function normalizeIdArray(body: any): string[] {
   let obj = body
@@ -44,9 +52,7 @@ export async function createGroup(req: Request, res: Response) {
     if (!name) return res.status(400).json({ message: 'name requerido' })
 
     const userId = getUserId(req)
-    // Ya no auto-agregamos el player del usuario para que el grupo nazca vacío.
-    // Si querés volver a ese comportamiento podés pasar un query param ?autoJoin=1 y usarlo aquí.
-    const group = await Group.create({ name, owner: userId, members: [] })
+    const group = await Group.create({ name, owner: userId, members: [], joinCode: generateJoinCode(), joinCodeUpdatedAt: new Date() })
 
     return res.status(201).json(group)
   } catch (err) {
@@ -97,6 +103,7 @@ export async function getGroupDetail(req: Request, res: Response) {
       isOwner,
       isMember,
       canEdit: isOwner,
+      joinCode: isOwner ? (group as any).joinCode : undefined,
     })
   } catch (err) {
     return res.status(500).json({ message: 'Error obteniendo grupo', error: (err as Error).message })
@@ -109,21 +116,143 @@ export async function joinGroup(req: Request, res: Response) {
     const groupId = String(req.params.id)
     if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
 
-    const userId = getUserId(req)
-    const myPlayerId = await getMyPlayerId(userId)
-    if (!myPlayerId) return res.status(400).json({ message: 'No hay Player asociado al usuario' })
+    const { code } = req.body as { code?: string }
+    const group = await Group.findById(groupId).select('owner members joinCode').lean()
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' })
 
-    const updated = await Group.findByIdAndUpdate(
+    const userId = getUserId(req)
+    const isOwner = String(group.owner) === userId
+    // Owner puede omitir code, resto debe proveer y coincidir (case insensitive)
+    if (!isOwner) {
+      if (!code || !group.joinCode || group.joinCode.toUpperCase() !== code.toUpperCase()) {
+        return res.status(400).json({ message: 'Código inválido' })
+      }
+    }
+
+    const myPlayerId = await getMyPlayerId(userId)
+    if (myPlayerId) {
+      // Ya tiene player: crear membership si no existe y añadir a members
+      await Group.findByIdAndUpdate(groupId, { $addToSet: { members: toObjectId(myPlayerId) } })
+      // Upsert membership contextual
+      await GroupMembership.findOneAndUpdate(
+        { groupId: toObjectId(groupId), playerId: toObjectId(myPlayerId) },
+        { $setOnInsert: { rating: 1000, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, role: 'member', status: 'active' } },
+        { upsert: true, new: true }
+      )
+      const membership = await GroupMembership.findOne({ groupId, playerId: myPlayerId }).lean()
+      return res.json({
+        groupId,
+        mode: 'attached-existing-player',
+        playerId: myPlayerId,
+        membership: membership && {
+          groupId: String(membership.groupId),
+            playerId: String(membership.playerId),
+          rating: membership.rating,
+          gamesPlayed: membership.gamesPlayed,
+          wins: membership.wins,
+          losses: membership.losses,
+          draws: membership.draws,
+        },
+        membershipCreated: true,
+      })
+    }
+
+    // Usuario sin player todavía -> listar placeholders unclaimed
+    const playerIds = (group.members as any[]).map(m => toObjectId(String(m)))
+    const players = await Player.find({ _id: { $in: playerIds }, userId: { $exists: false } })
+      .select('name nickname')
+      .lean()
+    return res.json({
       groupId,
-      { $addToSet: { members: toObjectId(myPlayerId) } },
-      { new: true }
-    )
-    if (!updated) return res.status(404).json({ message: 'Grupo no encontrado' })
-    return res.json(updated)
+      mode: 'need-claim',
+      unclaimed: players.map(p => ({ playerId: String(p._id), name: p.name, nickname: p.nickname }))
+    })
   } catch (err) {
-    return res
-      .status(500)
-      .json({ message: 'Error al unirse al grupo', error: (err as Error).message })
+    return res.status(500).json({ message: 'Error en join', error: (err as Error).message })
+  }
+}
+
+/** Unirse usando sólo el joinCode (sin conocer el id del grupo) */
+export async function joinGroupByCode(req: Request, res: Response) {
+  try {
+    const { code } = req.body as { code?: string }
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ message: 'code requerido' })
+    }
+    const norm = code.trim().toUpperCase()
+    // Buscar grupo por código (ya es único y uppercased en schema)
+    const group = await Group.findOne({ joinCode: norm }).select('_id joinCode').lean()
+    if (!group) return res.status(400).json({ message: 'Código inválido' })
+    // Reutilizamos la lógica existente seteando params y body normalizados
+    ;(req as any).params = { ...(req as any).params, id: String(group._id) }
+    ;(req as any).body = { ...(req as any).body, code: norm }
+    return joinGroup(req, res)
+  } catch (err) {
+    return res.status(500).json({ message: 'Error en join-by-code', error: (err as Error).message })
+  }
+}
+
+export async function claimPlayerInGroup(req: Request, res: Response) {
+  try {
+    const groupId = String(req.params.id)
+    if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
+    const { code, playerId } = req.body as { code?: string; playerId?: string }
+    if (!isHexId(playerId)) return res.status(400).json({ message: 'playerId inválido' })
+    const group = await Group.findById(groupId).select('owner members joinCode').lean()
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' })
+    if (!code || !group.joinCode || group.joinCode.toUpperCase() !== code.toUpperCase()) {
+      return res.status(400).json({ message: 'Código inválido' })
+    }
+    const userId = getUserId(req)
+    const existingPlayer = await Player.findOne({ userId }).select('_id').lean()
+    if (existingPlayer && String(existingPlayer._id) !== playerId) {
+      return res.status(409).json({ message: 'Ya tenés un player asignado.', yourPlayerId: String(existingPlayer._id) })
+    }
+    // Validar placeholder pertenece al grupo y no está reclamado
+    const inGroup = (group.members as any[]).some(m => String(m) === playerId)
+    if (!inGroup) return res.status(404).json({ message: 'El player no pertenece al grupo' })
+    const player = await Player.findById(playerId).lean()
+    if (!player) return res.status(404).json({ message: 'Player no encontrado' })
+    if ((player as any).userId) return res.status(409).json({ message: 'Player ya reclamado' })
+
+    // Reclamar: set userId
+    await Player.updateOne({ _id: playerId }, { $set: { userId } })
+    // Upsert membership
+    const membership = await GroupMembership.findOneAndUpdate(
+      { groupId: toObjectId(groupId), playerId: toObjectId(playerId) },
+      { $setOnInsert: { rating: 1000, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, role: 'member', status: 'active' } },
+      { upsert: true, new: true }
+    ).lean()
+    return res.status(201).json({
+      playerId,
+      claimed: true,
+      membership: membership && {
+        groupId: String(membership.groupId),
+        playerId: String(membership.playerId),
+        rating: membership.rating,
+        gamesPlayed: membership.gamesPlayed,
+        wins: membership.wins,
+        losses: membership.losses,
+        draws: membership.draws,
+      }
+    })
+  } catch (err) {
+    return res.status(500).json({ message: 'Error reclamando player', error: (err as Error).message })
+  }
+}
+
+export async function rotateJoinCode(req: Request, res: Response) {
+  try {
+    const groupId = String(req.params.id)
+    if (!isHexId(groupId)) return res.status(400).json({ message: 'groupId inválido' })
+    const userId = getUserId(req)
+    const group = await Group.findOne({ _id: groupId, owner: userId }).select('_id').lean()
+    if (!group) return res.status(403).json({ message: 'Solo owner puede rotar código' })
+    const newCode = generateJoinCode()
+    await Group.updateOne({ _id: groupId }, { $set: { joinCode: newCode, joinCodeUpdatedAt: new Date() } })
+    return res.json({ groupId, joinCode: newCode })
+  } catch (err) {
+    return res.status(500).json({ message: 'Error rotando código', error: (err as Error).message })
   }
 }
 
@@ -254,9 +383,9 @@ export async function listGroupPlayers(req: Request, res: Response) {
         return {
           playerId: pid,
           name: base.name,
-            nickname: base.nickname,
-          rating: m.rating ?? base.rating ?? 1000,
-          gamesPlayed: m.gamesPlayed ?? base.gamesPlayed ?? 0,
+          nickname: base.nickname,
+          rating: m.rating ?? 1000,
+          gamesPlayed: m.gamesPlayed ?? 0,
           membershipId: m._id ? String(m._id) : null,
         }
       })

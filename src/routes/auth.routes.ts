@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { User } from '../models/user.model.js';
 import { hashSha256, genSixDigitCode, genSessionToken, minutesFromNow } from '../utils/reset-password.js';
+import { sendPasswordResetCode } from '../services/email.service.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -51,21 +52,26 @@ router.post('/request-reset-code', async (req, res, next) => {
     if (!email) return res.status(200).json({ ok: true, message: 'If the email exists, a reset code was generated.' });
     const user = await User.findOne({ email });
     if (user) {
+      const throttleMs = Number(process.env.RESET_CODE_THROTTLE_MS || '60000');
+      if (user.lastResetEmailSentAt && (Date.now() - user.lastResetEmailSentAt.getTime()) < throttleMs) {
+        // Throttled: no regenerar ni enviar, respuesta genérica
+        return res.status(200).json({ ok: true, message: 'If the email exists, a reset code was generated.' });
+      }
       const code = genSixDigitCode();
-      user.resetCodeHash = hashSha256(code);
       const ttlMin = Number(process.env.RESET_CODE_TTL_MINUTES || '15');
+      user.resetCodeHash = hashSha256(code);
       user.resetCodeExpires = minutesFromNow(ttlMin);
       user.passwordResetSessionToken = null;
+      user.lastResetEmailSentAt = new Date();
       await user.save();
-      // Ambiente amigable: devolvemos SIEMPRE el código directamente para usarlo en el front.
-      // Para volver al modo seguro, reemplazar el return siguiente por el bloque comentado abajo.
-  return res.status(200).json({ ok: true, code, devCode: code, expiresMinutes: ttlMin });
 
-      /* MODO SEGURO (no exponer el código, solo mostrar mensaje genérico)
+      // Enviar email (o log en modo console)
+      await sendPasswordResetCode({ email, code, ttlMinutes: ttlMin });
+
       const payload: any = { ok: true, message: 'If the email exists, a reset code was generated.' };
-      if (process.env.NODE_ENV !== 'production') payload.devCode = code; // visible solo en dev
+      // En no-producción podemos exponer el devCode para facilitar pruebas
+      if (process.env.NODE_ENV !== 'production') payload.devCode = code;
       return res.status(200).json(payload);
-      */
     }
     return res.status(200).json({ ok: true, message: 'If the email exists, a reset code was generated.' });
   } catch (err) { next(err); }

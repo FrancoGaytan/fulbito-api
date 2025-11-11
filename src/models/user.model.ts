@@ -6,6 +6,7 @@ export interface IUser extends Document {
   resetCodeHash?: string | null;
   resetCodeExpires?: Date | null;
   passwordResetSessionToken?: string | null;
+  lastResetEmailSentAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -16,6 +17,7 @@ const userSchema = new Schema<IUser>({
   resetCodeHash: { type: String, required: false, default: null },
   resetCodeExpires: { type: Date, required: false, default: null },
   passwordResetSessionToken: { type: String, required: false, default: null },
+  lastResetEmailSentAt: { type: Date, required: false, default: null },
 }, { timestamps: true });
 
 export const User = model<IUser>('User', userSchema);

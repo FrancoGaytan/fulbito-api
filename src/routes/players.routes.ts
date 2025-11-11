@@ -94,7 +94,7 @@ router.get('/players/all', async (req, res, next) => {
   try {
     if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
     const players = await Player.find({})
-      .select('name nickname rating gamesPlayed userId owner')
+      .select('name nickname userId owner')
       .sort({ name: 1 })
       .lean({ getters: true })
 
@@ -172,7 +172,7 @@ router.get('/players/:id', async (req, res, next) => {
       }
       return res.json({
         ...player,
-        gamesPlayed: contextualGames ?? player.gamesPlayed ?? (stats.wins + stats.losses + stats.draws),
+        gamesPlayed: contextualGames ?? (stats.wins + stats.losses + stats.draws),
         stats: { wins: stats.wins, losses: stats.losses, draws: stats.draws, total: stats.wins + stats.losses + stats.draws }
       })
     } catch (statsErr) {

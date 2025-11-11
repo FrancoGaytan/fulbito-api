@@ -10,8 +10,8 @@
     "start": "node --enable-source-maps --experimental-specifier-resolution=node dist/server.js",
     "lint": "eslint . --ext .ts",
     "format": "prettier -w .",
-  "migrate:abilities": "ts-node scripts/migrate-abilities.ts",
-  "seed:multi": "tsx scripts/seed-multigroup.ts"
+    "migrate:abilities": "ts-node scripts/migrate-abilities.ts",
+    "seed:multi": "tsx scripts/seed-multigroup.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +24,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.18.2",
+    "resend": "^6.2.2",
     "zod": "^4.1.11"
   },
   "devDependencies": {

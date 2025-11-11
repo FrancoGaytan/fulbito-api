@@ -126,17 +126,10 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     if (!groupId || !Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ message: 'Id inválido' });
     }
-    const group = await GroupModel.findById(groupId).select('owner members');
-    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
-
-    const myPlayer = await PlayerModel.findOne({ $or: [ { owner: req.userId }, { userId: req.userId } ] })
-      .select('_id')
-      .lean();
-    const myPid = myPlayer?._id ? myPlayer._id.toString() : null;
-
-    const isOwner = group.owner.toString() === req.userId;
-    const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
-    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
+    const ctx = (req as any).groupContext;
+    if (!ctx || ctx.groupId !== groupId) {
+      return res.status(403).json({ message: 'Sin permiso (scoping)' });
+    }
 
     const matches = await MatchModel.find({ groupId }).lean();
     const matchIds = matches.map(m => m._id);
@@ -157,7 +150,7 @@ export async function listMatchesByGroup(req: Request, res: Response) {
       canEdit: m.owner && m.owner.toString() === req.userId,
       myVotes: votesMap.get(m._id.toString()) ?? [],
     }));
-  return res.json({ matches: out, meta: { isOwner, isMember, canCreate: (isOwner || isMember), groupId } });
+    return res.json({ matches: out, meta: { isOwner: ctx.isOwner, isMember: ctx.isMember, canCreate: (ctx.isOwner || ctx.isMember), groupId } });
   } catch (err) {
     return res.status(500).json({ message: 'Error listando matches', error: (err as Error).message });
   }
@@ -215,7 +208,7 @@ export async function generateTeams(req: Request, res: Response) {
     }
 
     const match = await MatchModel.findById(matchId)
-      .populate('participants', 'name rating abilities')
+      .populate('participants', 'name abilities')
       .select('participants teams status groupId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
 
@@ -229,12 +222,11 @@ export async function generateTeams(req: Request, res: Response) {
       membershipMap = new Map(memberships.map(m => [m.playerId.toString(), { rating: m.rating }]));
     }
     const participants = (match.participants as any[]).map(p => {
-      const baseRating = typeof p.rating === 'number' ? p.rating : 1000;
       const contextual = membershipMap.get(p._id.toString());
       return {
         id: p._id.toString(),
         name: p.name,
-        rating: contextual ? contextual.rating : baseRating,
+        rating: contextual ? contextual.rating : 1000,
         abilities: ((): Record<string, number> => {
           const a = p.abilities;
           if (!a) return {};
@@ -535,40 +527,38 @@ export async function finalizeMatch(req: Request, res: Response) {
     await match.save();
 
     try {
+      if (!(match as any).groupId) {
+        return res.status(409).json({ message: 'Match sin groupId (deprecated)' });
+      }
       const playerIdsSet = new Set<string>();
       for (const t of match.teams) {
         for (const pid of (t.players as any[])) if (pid) playerIdsSet.add(pid.toString());
       }
       if (playerIdsSet.size) {
         const ids = Array.from(playerIdsSet).map(id => new Types.ObjectId(id));
-        if ((match as any).groupId) {
-          // Determinar outcome por equipo para incrementar wins/losses/draws
-          let outcomeA: 'win' | 'lose' | 'draw' = 'draw';
-          if (scoreA > scoreB) outcomeA = 'win'; else if (scoreA < scoreB) outcomeA = 'lose';
-          const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
-          const teamAPlayers = new Set((match.teams[0]?.players as any[]).map(p => p.toString()))
-          const teamBPlayers = new Set((match.teams[1]?.players as any[]).map(p => p.toString()))
-          const bulk = ids.map(pid => {
-            const pidStr = pid.toString();
-            let inc: any = { gamesPlayed: 1 };
-            if (teamAPlayers.has(pidStr)) {
-              if (outcomeA === 'win') inc.wins = 1; else if (outcomeA === 'lose') inc.losses = 1; else inc.draws = 1;
-            } else if (teamBPlayers.has(pidStr)) {
-              if (outcomeB === 'win') inc.wins = 1; else if (outcomeB === 'lose') inc.losses = 1; else inc.draws = 1;
-            }
-            return {
-              updateOne: {
-                filter: { groupId: (match as any).groupId, playerId: pid },
-                update: { $inc: inc },
-                upsert: true,
-              },
-            };
-          });
-          await GroupMembership.bulkWrite(bulk as any);
-        } else {
-          const { Player } = await import('../models/player.model.js');
-          await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
-        }
+        // Determinar outcome por equipo para incrementar wins/losses/draws
+        let outcomeA: 'win' | 'lose' | 'draw' = 'draw';
+        if (scoreA > scoreB) outcomeA = 'win'; else if (scoreA < scoreB) outcomeA = 'lose';
+        const outcomeB = outcomeA === 'win' ? 'lose' : outcomeA === 'lose' ? 'win' : 'draw';
+        const teamAPlayers = new Set((match.teams[0]?.players as any[]).map(p => p.toString()));
+        const teamBPlayers = new Set((match.teams[1]?.players as any[]).map(p => p.toString()));
+        const bulk = ids.map(pid => {
+          const pidStr = pid.toString();
+          let inc: any = { gamesPlayed: 1 };
+          if (teamAPlayers.has(pidStr)) {
+            if (outcomeA === 'win') inc.wins = 1; else if (outcomeA === 'lose') inc.losses = 1; else inc.draws = 1;
+          } else if (teamBPlayers.has(pidStr)) {
+            if (outcomeB === 'win') inc.wins = 1; else if (outcomeB === 'lose') inc.losses = 1; else inc.draws = 1;
+          }
+          return {
+            updateOne: {
+              filter: { groupId: (match as any).groupId, playerId: pid },
+              update: { $inc: inc },
+              upsert: true,
+            },
+          };
+        });
+        await GroupMembership.bulkWrite(bulk as any);
       }
     } catch (e) {
       if (process.env.NODE_ENV !== 'production') {
@@ -676,31 +666,29 @@ export async function applyRatings(req: Request, res: Response) {
       fbMap.set(r._id.toString(), val);
     }
 
+    if (!(match as any).groupId) {
+      return res.status(409).json({ message: 'Match sin groupId (deprecated)' });
+    }
+
     const playerDeltas: { playerId: Types.ObjectId; before: number; after: number; delta: number }[] = [];
     const membershipUpdates: { filter: any; update: any }[] = [];
-    const directPlayerUpdates: { _id: Types.ObjectId; rating: number }[] = []; // fallback si no hay groupId
 
-    const hasGroupContext = !!(match as any).groupId;
     let membershipCache = new Map<string, { _id: Types.ObjectId; rating: number }>();
-    if (hasGroupContext) {
-      const allPlayerIds: Types.ObjectId[] = [];
-      for (const t of match.teams) {
-        for (const p of (t.players as any[])) if (p && p._id) allPlayerIds.push(p._id);
-      }
-      const memberships = await GroupMembership.find({ groupId: (match as any).groupId, playerId: { $in: allPlayerIds } })
-        .select('playerId rating')
-        .lean();
-      membershipCache = new Map(memberships.map(m => [m.playerId.toString(), { _id: m.playerId as any, rating: m.rating }]));
+    const allPlayerIds: Types.ObjectId[] = [];
+    for (const t of match.teams) {
+      for (const p of (t.players as any[])) if (p && p._id) allPlayerIds.push(p._id);
     }
+    const memberships = await GroupMembership.find({ groupId: (match as any).groupId, playerId: { $in: allPlayerIds } })
+      .select('playerId rating')
+      .lean();
+    membershipCache = new Map(memberships.map(m => [m.playerId.toString(), { _id: m.playerId as any, rating: m.rating }]));
 
     const applyForTeam = (team: any, outcome: 'win' | 'lose' | 'draw') => {
       for (const p of team.players as any[]) {
         if (!p || !p._id) continue;
         let before = typeof p.rating === 'number' ? p.rating : 1000;
-        if (hasGroupContext) {
-          const mem = membershipCache.get(p._id.toString());
-          if (mem) before = mem.rating;
-        }
+        const mem = membershipCache.get(p._id.toString());
+        if (mem) before = mem.rating;
         let base = outcome === 'win' ? baseWin : outcome === 'lose' ? baseLose : baseDraw;
         const fb = fbMap.get(p._id.toString()) ?? 0;
         let total = base + fb;
@@ -710,32 +698,19 @@ export async function applyRatings(req: Request, res: Response) {
         if (total < -40) total = -40;
   const after = Math.max(500, before + total);
         playerDeltas.push({ playerId: p._id, before, after, delta: after - before });
-        if (hasGroupContext) {
-          membershipUpdates.push({
-            filter: { groupId: (match as any).groupId, playerId: p._id },
-            update: { $set: { rating: after } },
-          });
-        } else {
-          directPlayerUpdates.push({ _id: p._id, rating: after });
-        }
+        membershipUpdates.push({
+          filter: { groupId: (match as any).groupId, playerId: p._id },
+          update: { $set: { rating: after } },
+        });
       }
     };
 
     applyForTeam(teamA, outcomeA);
     applyForTeam(teamB, outcomeB);
 
-    if (hasGroupContext && membershipUpdates.length) {
-      // Ejecutar bulk en GroupMembership. Si falta alguna membership (no encontrada), crearla on upsert.
-      const bulk = membershipUpdates.map(m => ({
-        updateOne: { filter: m.filter, update: m.update, upsert: true },
-      }));
+    if (membershipUpdates.length) {
+      const bulk = membershipUpdates.map(m => ({ updateOne: { filter: m.filter, update: m.update, upsert: true } }));
       await GroupMembership.bulkWrite(bulk as any);
-    } else if (!hasGroupContext && directPlayerUpdates.length) {
-      const bulk = directPlayerUpdates.map(u => ({
-        updateOne: { filter: { _id: u._id }, update: { $set: { rating: u.rating } } },
-      }));
-      const { Player } = await import('../models/player.model.js');
-      await Player.bulkWrite(bulk as any);
     }
 
     match.ratingApplied = true as any;
