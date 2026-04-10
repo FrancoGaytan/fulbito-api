@@ -9,17 +9,88 @@ import { MatchPlayerVote } from '../models/match-vote.model.js';
 /* ------------------------ helpers de balance/aleatoriedad ------------------------ */
 
 function generateBalancedTeams(
-  participants: { _id: string; rating: number }[],
+  participants: { _id: string; rating: number; abilityScore?: number }[],
+  opts?: { seed?: number; randomness?: number },
 ) {
-  const sorted = [...participants].sort((a, b) => b.rating - a.rating);
-  const teamA: string[] = [];
-  const teamB: string[] = [];
+  const seed = opts?.seed ?? Math.floor(Math.random() * 1e9);
+  const rnd = (() => {
+    let t = seed >>> 0;
+    return () => ((t = (t * 1664525 + 1013904223) >>> 0) / 4294967296);
+  })();
+
+  // combine rating and abilityScore into a single score (ability has secondary weight)
+  const abilityWeight = 0.2;
+  const withScore = participants.map(p => ({
+    ...p,
+    combined: p.rating + (p.abilityScore || 0) * abilityWeight,
+  }));
+
+  // initial greedy by combined score
+  const sorted = [...withScore].sort((a, b) => b.combined - a.combined);
+  let teamA: string[] = [];
+  let teamB: string[] = [];
   let sumA = 0, sumB = 0;
   for (const p of sorted) {
-    if (sumA <= sumB) { teamA.push(p._id); sumA += p.rating; }
-    else { teamB.push(p._id); sumB += p.rating; }
+    if (sumA <= sumB) { teamA.push(p._id); sumA += p.combined; }
+    else { teamB.push(p._id); sumB += p.combined; }
   }
-  return { teamA, teamB };
+
+  // perform some randomized swaps to introduce variability while keeping balance
+  const iterations = 30;
+  const randomness = Math.max(0, Math.min(1, opts?.randomness ?? 0.15));
+  const ratingsMap = new Map(participants.map(p => [p._id, p.rating]));
+  const abilityMap = new Map(participants.map(p => [p._id, p.abilityScore || 0]));
+
+  const scoreDiff = (a: string[], b: string[]) => {
+    const sum = (arr: string[], map: Map<string, number>) => arr.reduce((acc, id) => acc + (map.get(id) || 0), 0);
+    const rA = sum(a, ratingsMap), rB = sum(b, ratingsMap);
+    const aA = sum(a, abilityMap), aB = sum(b, abilityMap);
+    return Math.abs(rA - rB) + Math.abs(aA - aB) * 0.2;
+  };
+
+  let bestA = teamA.slice();
+  let bestB = teamB.slice();
+  let bestScore = scoreDiff(bestA, bestB);
+
+  for (let i = 0; i < iterations; i++) {
+    if (teamA.length === 0 || teamB.length === 0) break;
+    // pick random indices
+    const ia = Math.floor(rnd() * teamA.length);
+    const ib = Math.floor(rnd() * teamB.length);
+    const aId = teamA[ia];
+    const bId = teamB[ib];
+
+    // try swap only if both aId and bId are defined
+    if (typeof aId === 'string' && typeof bId === 'string') {
+      teamA[ia] = bId;
+      teamB[ib] = aId;
+    }
+
+    const curScore = scoreDiff(teamA, teamB);
+    // accept if improves or with small probability depending on randomness
+    if (curScore <= bestScore || rnd() < randomness) {
+      if (curScore < bestScore) {
+        bestScore = curScore;
+        bestA = teamA.slice();
+        bestB = teamB.slice();
+      }
+      // keep swap
+    } else {
+      // revert
+      if (typeof aId === 'string' && typeof bId === 'string') {
+      teamA[ia] = aId;
+      teamB[ib] = bId;
+      }
+    }
+  }
+
+  // ensure sizes differ by at most 1
+  while (Math.abs(bestA.length - bestB.length) > 1) {
+    if (bestA.length > bestB.length) bestB.push(bestA.pop()!);
+    else bestA.push(bestB.pop()!);
+  }
+
+  return { teamA: bestA, teamB: bestB };
 }
 
 function seededRng(seed: number) {
@@ -401,14 +472,14 @@ export async function generateTeams(req: Request, res: Response) {
         }
       } catch (e) {
         aiError = (e as Error).message;
-        const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating }));
-        const fb = generateBalancedTeams(shuffled);
+        const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating, abilityScore: Object.values(p.abilities || {}).reduce((a: number, v: any) => a + (typeof v === 'number' ? v : 0), 0) }));
+        const fb = generateBalancedTeams(shuffled, { seed, randomness: 0.25 });
         teamA = fb.teamA;
         teamB = fb.teamB;
       }
     } else {
-      const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating }));
-      const fb = generateBalancedTeams(shuffled);
+      const shuffled = seededShuffle(participants, seed).map(p => ({ _id: p.id, rating: p.rating, abilityScore: Object.values(p.abilities || {}).reduce((a: number, v: any) => a + (typeof v === 'number' ? v : 0), 0) }));
+      const fb = generateBalancedTeams(shuffled, { seed, randomness: 0.25 });
       teamA = fb.teamA;
       teamB = fb.teamB;
     }

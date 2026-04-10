@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { Types } from 'mongoose'
 import { Player } from '../models/player.model.js'
 import { Match } from '../models/match.model.js'
 import { normalizeAbilitiesInput } from '../utils/abilities.js'
@@ -77,6 +78,39 @@ router.get('/players/:id', async (req, res, next) => {
     } catch (statsErr) {
       return res.json({ ...player, stats: { wins: 0, losses: 0, draws: 0, total: 0, error: 'stats_failed' } })
     }
+  } catch (e) { next(e) }
+})
+
+// HISTORIAL DE ELO de un jugador (partidos finalizados con ratingChanges)
+router.get('/players/:id/elo-history', async (req, res, next) => {
+  try {
+    if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
+    const { id } = req.params
+    if (!id) return res.status(400).json({ message: 'id requerido' })
+
+    const playerObjId = new Types.ObjectId(id)
+
+    const matches = await Match.find({
+      status: 'finalized',
+      'ratingChanges.playerId': playerObjId,
+    })
+      .select('scheduledAt createdAt ratingChanges')
+      .sort({ scheduledAt: 1, createdAt: 1 })
+      .lean()
+
+    const history = matches.map((m) => {
+      const change = (m.ratingChanges ?? []).find(
+        (rc) => rc.playerId.toString() === id
+      )
+      return {
+        date: m.scheduledAt ?? m.createdAt,
+        before: change?.before ?? null,
+        after: change?.after ?? null,
+        delta: change?.delta ?? null,
+      }
+    }).filter((h) => h.after !== null)
+
+    return res.json(history)
   } catch (e) { next(e) }
 })
 

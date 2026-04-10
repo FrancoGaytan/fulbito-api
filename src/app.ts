@@ -12,15 +12,15 @@ import { errorHandler } from './middlewares/error.js'
 export const buildApp = () => {
   const app = express()
 
-  const allowed = [
-    'http://localhost:5173',
-    'https://fulbito-web.vercel.app',
-  ]
+  const allowed = ['https://fulbito-web.vercel.app']
+  const isLocalOrigin = (origin: string) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+
   app.use(
     cors({
       origin(origin, cb) {
-        if (!origin || allowed.includes(origin)) return cb(null, true)
-        cb(new Error('CORS not allowed: ' + origin))
+        if (!origin || allowed.includes(origin) || isLocalOrigin(origin)) return cb(null, true)
+        console.warn('[CORS] Origin not allowed:', origin)
+        cb(null, false)
       },
       credentials: false,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
