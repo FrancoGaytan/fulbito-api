@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 export async function connectMongo(uri: string) {
   mongoose.set('strictQuery', true);
   await mongoose.connect(process.env.MONGODB_URI!, {
-    dbName: 'footy',
+    dbName: 'footy-2',
     serverSelectionTimeoutMS: 15000,
     socketTimeoutMS: 45000,
   });

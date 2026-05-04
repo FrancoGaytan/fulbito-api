@@ -5,8 +5,10 @@ import groupsRouter from './routes/groups.routes.js'
 import playersRouter from './routes/players.routes.js'
 import matchesRouter from './routes/matches.routes.js'
 import authRoutes from './routes/auth.routes.js'
+import spacesRouter from './routes/spaces.routes.js'
 
 import { attachUser, requireAuth } from './middlewares/auth.js'
+import { requireSpace } from './middlewares/space.js'
 import { errorHandler } from './middlewares/error.js'
 
 export const buildApp = () => {
@@ -24,7 +26,7 @@ export const buildApp = () => {
       },
       credentials: false,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-space-id'],
     })
   )
 
@@ -33,9 +35,10 @@ export const buildApp = () => {
   app.get('/health', (_req, res) => res.json({ ok: true }))
   app.use(attachUser)
   app.use('/api/auth', authRoutes)
-  app.use('/api', requireAuth, groupsRouter)
-  app.use('/api', requireAuth, playersRouter)
-  app.use('/api/matches', requireAuth, matchesRouter)
+  app.use('/api/spaces', requireAuth, spacesRouter)
+  app.use('/api', requireAuth, requireSpace, groupsRouter)
+  app.use('/api', requireAuth, requireSpace, playersRouter)
+  app.use('/api/matches', requireAuth, requireSpace, matchesRouter)
   app.use(errorHandler)
 
   return app

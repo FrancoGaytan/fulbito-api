@@ -22,6 +22,7 @@ export interface IMatchResult {
 
 export interface IMatch extends Document {
   groupId: Types.ObjectId;
+  spaceId?: Types.ObjectId;    // optional during migration; required going forward
   participants: Types.ObjectId[];
   teams: IMatchTeam[];
   feedback: IMatchFeedback[];
@@ -72,6 +73,7 @@ const matchResultSchema = new Schema<IMatchResult>(
 const matchSchema = new Schema<IMatch>(
   {
     groupId: { type: Schema.Types.ObjectId, ref: 'Group', required: true },
+    spaceId: { type: Schema.Types.ObjectId, ref: 'Space', index: true, default: null },
     participants: [{ type: Schema.Types.ObjectId, ref: 'Player', default: [] }],
     teams: { type: [matchTeamSchema], default: [] },
     feedback: { type: [matchFeedbackSchema], default: [] },
