@@ -27,8 +27,10 @@ router.get('/players', async (req, res, next) => {
 })
 
 // LISTAR TODOS los jugadores (para asignarse uno ya existente)
-// Si hay un space activo, sólo muestra jugadores de ese space
-// y sobreescribe rating/gamesPlayed con los datos per-space de SpacePlayer
+// Si hay un space activo:
+//   - Jugadores registrados: los que tienen SpacePlayer en este space (cruzado con Player por userId)
+//   - Jugadores anónimos: Player con spaceId = este space (sin userId)
+// Así, unirse via código de invitación crea SpacePlayer y el jugador aparece aquí.
 router.get('/players/all', async (req, res, next) => {
   try {
     if (!req.userId) return res.status(401).json({ message: 'unauthorized' })
@@ -38,7 +40,18 @@ router.get('/players/all', async (req, res, next) => {
 
     if (req.spaceId) {
       spaceOid = new Types.ObjectId(req.spaceId)
-      filter = { spaceId: spaceOid }
+
+      // Usuarios que tienen SpacePlayer en este space (registrados)
+      const spacePlayers = await SpacePlayer.find({ spaceId: spaceOid }).select('userId').lean()
+      const memberUserIds = spacePlayers.map(sp => sp.userId)
+
+      filter = {
+        $or: [
+          { userId: { $in: memberUserIds } },                        // jugadores reclamados en este space
+          { spaceId: spaceOid, userId: null },                       // jugadores anónimos de este space
+          { spaceId: spaceOid, userId: { $exists: false } },         // anónimos legacy
+        ],
+      }
     }
 
     const players = await Player.find(filter)
@@ -46,7 +59,7 @@ router.get('/players/all', async (req, res, next) => {
       .sort({ name: 1 })
       .lean({ getters: true })
 
-    // Overlay per-space stats si existe SpacePlayer para este space
+    // Overlay per-space stats desde SpacePlayer
     if (spaceOid && players.length) {
       const userIds = players.map((p: any) => p.userId).filter(Boolean)
       const spaceStats = await SpacePlayer.find({
