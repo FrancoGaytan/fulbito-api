@@ -27,7 +27,7 @@ router.get('/players', async (req, res, next) => {
 })
 
 // LISTAR TODOS los jugadores (para asignarse uno ya existente)
-// Si hay un space activo, sólo muestra jugadores cuyos usuarios son miembros del space
+// Si hay un space activo, sólo muestra jugadores de ese space
 // y sobreescribe rating/gamesPlayed con los datos per-space de SpacePlayer
 router.get('/players/all', async (req, res, next) => {
   try {
@@ -38,16 +38,7 @@ router.get('/players/all', async (req, res, next) => {
 
     if (req.spaceId) {
       spaceOid = new Types.ObjectId(req.spaceId)
-      const memberships = await SpaceMembership.find({ spaceId: spaceOid }).select('userId').lean()
-      const memberUserIds = memberships.map(m => m.userId)
-
-      filter = {
-        $or: [
-          { userId: { $in: memberUserIds } },
-          { userId: null, spaceId: spaceOid },
-          { userId: { $exists: false }, spaceId: spaceOid },
-        ],
-      }
+      filter = { spaceId: spaceOid }
     }
 
     const players = await Player.find(filter)
