@@ -1,7 +1,5 @@
 import { Router } from 'express';
 import { User } from '../models/user.model.js';
-import { Space } from '../models/space.model.js';
-import { SpaceMembership } from '../models/space-membership.model.js';
 import { hashSha256, genSixDigitCode, genSessionToken, minutesFromNow } from '../utils/reset-password.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -20,12 +18,6 @@ router.post('/register', async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await User.create({ email, passwordHash });
-
-    // Auto-unir al space por defecto "Fulbito"
-    const defaultSpace = await Space.findOne({ name: 'Fulbito' }).lean();
-    if (defaultSpace) {
-      await SpaceMembership.create({ spaceId: defaultSpace._id, userId: user._id, role: 'member' }).catch(() => {});
-    }
 
     const token = jwt.sign({ sub: user.id, email }, JWT_SECRET, { expiresIn: JWT_EXP });
     res.status(201).json({ token });
