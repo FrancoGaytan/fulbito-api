@@ -43,9 +43,7 @@ export async function createGroup(req: Request, res: Response) {
     if (!name) return res.status(400).json({ message: 'name requerido' })
 
     const userId = getUserId(req)
-    // Ya no auto-agregamos el player del usuario para que el grupo nazca vacío.
-    // Si querés volver a ese comportamiento podés pasar un query param ?autoJoin=1 y usarlo aquí.
-    const group = await Group.create({ name, owner: userId, members: [] })
+    const group = await Group.create({ name, owner: userId, members: [], spaceId: req.spaceId })
 
     return res.status(201).json(group)
   } catch (err) {
@@ -60,9 +58,13 @@ export async function listGroups(req: Request, res: Response) {
   try {
     const userId = getUserId(req)
     const myPlayerId = await getMyPlayerId(userId)
-    const criteria: any = myPlayerId
-      ? { $or: [ { owner: userId }, { members: new Types.ObjectId(myPlayerId) } ] }
-      : { owner: userId }
+    const spaceFilter = req.spaceId ? { spaceId: req.spaceId } : {}
+    const criteria: any = {
+      ...spaceFilter,
+      ...(myPlayerId
+        ? { $or: [ { owner: userId }, { members: new Types.ObjectId(myPlayerId) } ] }
+        : { owner: userId }),
+    }
     const groups = await Group.find(criteria).lean()
     // Añadir flags
     const out = groups.map(g => ({

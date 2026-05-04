@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { Match as MatchModel } from '../models/match.model.js';
 import { Group as GroupModel } from '../models/group.model.js';
 import { Player as PlayerModel } from '../models/player.model.js';
+import { SpacePlayer } from '../models/space-player.model.js';
 import { suggestTeamsWithGemini } from '../ai/suggest-teams.js';
 import { MatchPlayerVote } from '../models/match-vote.model.js';
 
@@ -198,6 +199,7 @@ export async function createMatch(req: Request, res: Response) {
       result: undefined,
       status: 'pending',
       owner: req.userId!,
+      ...(req.spaceId ? { spaceId: new Types.ObjectId(req.spaceId) } : {}),
       ...(when ? { scheduledAt: when } : {}),
     });
 
@@ -227,7 +229,9 @@ export async function listMatchesByGroup(req: Request, res: Response) {
     const isMember = !!(myPid && (group.members ?? []).some(m => m.toString() === myPid));
     if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
 
-    const matches = await MatchModel.find({ groupId }).lean();
+    const matchFilter: any = { groupId }
+    if (req.spaceId) matchFilter.spaceId = req.spaceId
+    const matches = await MatchModel.find(matchFilter).lean();
     const matchIds = matches.map(m => m._id);
     const { MatchPlayerVote } = await import('../models/match-vote.model.js');
     const votes = await MatchPlayerVote.find({ matchId: { $in: matchIds }, voterUserId: req.userId })
@@ -304,14 +308,40 @@ export async function generateTeams(req: Request, res: Response) {
     }
 
     const match = await MatchModel.findById(matchId)
-      .populate('participants', 'name rating abilities')
-      .select('participants teams status');
+      .populate('participants', 'name rating abilities userId')
+      .select('participants teams status spaceId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    // Cargar ratings per-space si el match tiene spaceId
+    let spaceRatingsMap = new Map<string, number>();
+    if ((match as any).spaceId) {
+      const playerDocs = match.participants as any[];
+      const userIds = playerDocs.map(p => p.userId).filter(Boolean);
+      if (userIds.length) {
+        const spaceStats = await SpacePlayer.find({
+          spaceId: (match as any).spaceId,
+          userId: { $in: userIds },
+        }).select('userId rating').lean();
+        for (const s of spaceStats) {
+          // Mapear por userId para luego cruzar con player
+          spaceRatingsMap.set(s.userId.toString(), s.rating);
+        }
+        // Construir mapa playerId → spaceRating
+        const spaceRatingsByPlayerId = new Map<string, number>();
+        for (const p of playerDocs) {
+          if (p.userId) {
+            const r = spaceRatingsMap.get(p.userId.toString());
+            if (r !== undefined) spaceRatingsByPlayerId.set(p._id.toString(), r);
+          }
+        }
+        spaceRatingsMap = spaceRatingsByPlayerId;
+      }
+    }
 
     const participants = (match.participants as any[]).map(p => ({
       id: p._id.toString(),
       name: p.name,
-      rating: typeof p.rating === 'number' ? p.rating : 1000,
+      rating: spaceRatingsMap.get(p._id.toString()) ?? (typeof p.rating === 'number' ? p.rating : 1000),
       abilities: ((): Record<string, number> => {
         const a = p.abilities;
         if (!a) return {};
@@ -617,7 +647,7 @@ export async function finalizeMatch(req: Request, res: Response) {
       return res.status(400).json({ message: 'Scores inválidos' });
     }
 
-    const match = await MatchModel.findById(matchId).select('teams status result');
+    const match = await MatchModel.findById(matchId).select('teams status result spaceId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
 
     match.status = 'finalized';
@@ -640,7 +670,26 @@ export async function finalizeMatch(req: Request, res: Response) {
       if (playerIdsSet.size) {
         const ids = Array.from(playerIdsSet).map(id => new Types.ObjectId(id));
         const { Player } = await import('../models/player.model.js');
-        await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
+
+        if ((match as any).spaceId) {
+          // Actualizar gamesPlayed en SpacePlayer (per-space) para players con userId
+          const playersWithUser = await Player.find({ _id: { $in: ids }, userId: { $exists: true, $ne: null } }).select('userId').lean();
+          if (playersWithUser.length) {
+            const userIds = playersWithUser.map(p => p.userId);
+            await SpacePlayer.updateMany(
+              { spaceId: (match as any).spaceId, userId: { $in: userIds } },
+              { $inc: { gamesPlayed: 1 } },
+            );
+          }
+          // Para players anónimos (sin userId) seguir actualizando en Player
+          await Player.updateMany(
+            { _id: { $in: ids }, $or: [{ userId: null }, { userId: { $exists: false } }] },
+            { $inc: { gamesPlayed: 1 } },
+          );
+        } else {
+          // Sin spaceId: comportamiento legacy
+          await Player.updateMany({ _id: { $in: ids } }, { $inc: { gamesPlayed: 1 } });
+        }
       }
     } catch (e) {
     }
@@ -679,8 +728,8 @@ export async function applyRatings(req: Request, res: Response) {
     }
 
     const match = await MatchModel.findById(matchId)
-      .populate('teams.players', 'rating')
-      .select('teams status result ratingApplied ratingChanges participants');
+      .populate('teams.players', 'rating userId')
+      .select('teams status result ratingApplied ratingChanges participants spaceId');
     if (!match) return res.status(404).json({ message: 'Match no encontrado' });
     if (match.status !== 'finalized') {
       return res.status(400).json({ message: 'El match debe estar finalizado' });
@@ -765,18 +814,81 @@ export async function applyRatings(req: Request, res: Response) {
       }
     };
 
+    // Si hay spaceId, sobreescribir p.rating con SpacePlayer.rating ANTES de calcular deltas,
+    // para que el ELO se calcule desde la base del space (no el rating global del Player).
+    const matchSpaceIdPre: Types.ObjectId | undefined = (match as any).spaceId;
+    if (matchSpaceIdPre) {
+      const allPlayers = [...(teamA.players as any[]), ...(teamB.players as any[])];
+      const userIds = allPlayers.filter(p => p?.userId).map(p => p.userId);
+      if (userIds.length) {
+        const spacePlayers = await SpacePlayer.find({
+          spaceId: matchSpaceIdPre,
+          userId: { $in: userIds },
+        }).select('userId rating').lean();
+        const spMap = new Map(spacePlayers.map(sp => [sp.userId.toString(), sp.rating]));
+        for (const t of [teamA, teamB]) {
+          for (const p of t.players as any[]) {
+            if (p?.userId) {
+              const sr = spMap.get(p.userId.toString());
+              if (sr !== undefined) p.rating = sr;
+            }
+          }
+        }
+      }
+    }
+
     applyForTeam(teamA, outcomeA);
     applyForTeam(teamB, outcomeB);
 
     if (playerUpdates.length) {
-      const bulk = playerUpdates.map(u => ({
-        updateOne: {
-          filter: { _id: u._id },
-          update: { $set: { rating: u.rating } },
-        },
-      }));
       const { Player } = await import('../models/player.model.js');
-      await Player.bulkWrite(bulk as any);
+      const matchSpaceId: Types.ObjectId | undefined = (match as any).spaceId;
+
+      if (matchSpaceId) {
+        // Per-space: actualizar SpacePlayer para los que tienen userId
+        // y Player para los anónimos
+        const playerDocs = await Player.find({
+          _id: { $in: playerUpdates.map(u => u._id) },
+        }).select('_id userId').lean();
+
+        const withUser = playerDocs.filter(p => p.userId);
+        const withoutUser = playerDocs.filter(p => !p.userId);
+
+        if (withUser.length) {
+          const spacePlayerBulk = withUser.map(p => {
+            const upd = playerUpdates.find(u => u._id.toString() === p._id.toString())!;
+            return {
+              updateOne: {
+                filter: { spaceId: matchSpaceId, userId: p.userId },
+                update: { $set: { rating: upd.rating } },
+              },
+            };
+          });
+          await SpacePlayer.bulkWrite(spacePlayerBulk as any);
+        }
+
+        if (withoutUser.length) {
+          const anonBulk = withoutUser.map(p => {
+            const upd = playerUpdates.find(u => u._id.toString() === p._id.toString())!;
+            return {
+              updateOne: {
+                filter: { _id: p._id },
+                update: { $set: { rating: upd.rating } },
+              },
+            };
+          });
+          await Player.bulkWrite(anonBulk as any);
+        }
+      } else {
+        // Sin spaceId: comportamiento legacy — actualizar Player directamente
+        const bulk = playerUpdates.map(u => ({
+          updateOne: {
+            filter: { _id: u._id },
+            update: { $set: { rating: u.rating } },
+          },
+        }));
+        await Player.bulkWrite(bulk as any);
+      }
     }
 
     match.ratingApplied = true as any;
