@@ -15,6 +15,7 @@ router.get('/group/:id', requireAuth, ctrl.listMatchesByGroup);
 // Operaciones sobre un match puntual
 router.post('/:id/participants', requireAuth, enforceOwnership(Match, 'id'), ctrl.addParticipant);
 router.post('/:id/generate-teams', requireAuth, enforceOwnership(Match, 'id'), ctrl.generateTeams);
+router.post('/:id/substitution', requireAuth, enforceOwnership(Match, 'id'), ctrl.substitutePlayer);
 router.post('/:id/feedback', requireAuth, ctrl.addFeedback); // cualquier miembro podrá votar (validación interna)
 router.get('/:id/vote-progress', requireAuth, ctrl.getVoteProgress);
 router.get('/:id/my-votes', requireAuth, ctrl.getMyVotes);

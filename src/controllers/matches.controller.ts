@@ -291,6 +291,89 @@ export async function addParticipant(req: Request, res: Response) {
   }
 }
 
+/* -------------------------------- substitutePlayer ---------------------------- */
+
+export async function substitutePlayer(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    const { outgoingPlayerId, incomingPlayerId } = req.body as {
+      outgoingPlayerId?: string;
+      incomingPlayerId?: string;
+    };
+
+    if (
+      !matchId ||
+      !Types.ObjectId.isValid(matchId) ||
+      !outgoingPlayerId ||
+      !Types.ObjectId.isValid(outgoingPlayerId) ||
+      !incomingPlayerId ||
+      !Types.ObjectId.isValid(incomingPlayerId)
+    ) {
+      return res.status(400).json({ message: 'Ids inválidos' });
+    }
+
+    const outgoingId = new Types.ObjectId(outgoingPlayerId);
+    const incomingId = new Types.ObjectId(incomingPlayerId);
+    if (outgoingId.equals(incomingId)) {
+      return res.status(400).json({ message: 'Los jugadores deben ser distintos' });
+    }
+
+    const match = await MatchModel.findById(matchId).select(
+      'groupId spaceId participants teams status result ratingApplied feedback',
+    );
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+    if (match.status === 'finalized' || match.result || match.ratingApplied) {
+      return res.status(409).json({ message: 'No se pueden cambiar jugadores en un match finalizado' });
+    }
+    if (match.teams.length < 2) {
+      return res.status(409).json({ message: 'Primero generá los equipos' });
+    }
+
+    const group = await GroupModel.findById(match.groupId).select('members spaceId');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+    if (
+      req.spaceId &&
+      ((match.spaceId && match.spaceId.toString() !== req.spaceId) ||
+        (group.spaceId && group.spaceId.toString() !== req.spaceId))
+    ) {
+      return res.status(404).json({ message: 'Grupo no encontrado' });
+    }
+    if (!(group.members ?? []).some(member => member.equals(incomingId))) {
+      return res.status(400).json({ message: 'El jugador que entra no pertenece al grupo del match' });
+    }
+    if (!(await PlayerModel.exists({ _id: incomingId }))) {
+      return res.status(404).json({ message: 'Jugador que entra no encontrado' });
+    }
+
+    const participantIndex = match.participants.findIndex(player => player.equals(outgoingId));
+    if (participantIndex < 0) {
+      return res.status(400).json({ message: 'El jugador que sale no participa en el match' });
+    }
+    if (match.participants.some(player => player.equals(incomingId))) {
+      return res.status(400).json({ message: 'El jugador que entra ya participa en el match' });
+    }
+
+    const teamsContainingOutgoing = match.teams.filter(team =>
+      team.players.some(player => player.equals(outgoingId)),
+    );
+    if (teamsContainingOutgoing.length !== 1) {
+      return res.status(400).json({ message: 'El jugador debe estar en exactamente un equipo' });
+    }
+
+    const team = teamsContainingOutgoing[0]!;
+    const teamPlayerIndex = team.players.findIndex(player => player.equals(outgoingId));
+    match.participants[participantIndex] = incomingId;
+    team.players[teamPlayerIndex] = incomingId;
+    match.feedback = match.feedback.filter(feedback => !feedback.playerId.equals(outgoingId));
+
+    await MatchPlayerVote.deleteMany({ matchId: match._id, playerId: outgoingId });
+    await match.save();
+    return res.json(match);
+  } catch (err) {
+    return res.status(500).json({ message: 'Error cambiando jugador', error: (err as Error).message });
+  }
+}
+
 /* -------------------------------- generateTeams -------------------------------- */
 
 export async function generateTeams(req: Request, res: Response) {
