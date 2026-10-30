@@ -49,6 +49,7 @@ API REST para organizar partidos de fútbol amateur, con registro de jugadores, 
 ### Matches
 - `POST /api/matches` → `{ groupId, participants[] }`
 - `GET /api/matches/group/:id`
+- `GET /api/matches/:id`
 - `POST /api/matches/:id/participants` → `{ playerId }`
 - `POST /api/matches/:id/generate-teams`
 - `POST /api/matches/:id/substitution` → `{ outgoingPlayerId, incomingPlayerId }` (reemplaza a un jugador por otro del grupo en el mismo equipo; solo antes de finalizar)

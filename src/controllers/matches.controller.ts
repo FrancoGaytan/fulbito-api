@@ -256,6 +256,48 @@ export async function listMatchesByGroup(req: Request, res: Response) {
   }
 }
 
+/* ----------------------------------- getMatch ---------------------------------- */
+
+export async function getMatch(req: Request, res: Response) {
+  try {
+    const { id: matchId } = req.params as { id?: string };
+    if (!matchId || !Types.ObjectId.isValid(matchId)) {
+      return res.status(400).json({ message: 'Id inválido' });
+    }
+
+    const match = await MatchModel.findById(matchId);
+    if (!match) return res.status(404).json({ message: 'Match no encontrado' });
+
+    const group = await GroupModel.findById(match.groupId).select('owner members spaceId');
+    if (!group) return res.status(404).json({ message: 'Grupo no encontrado' });
+
+    const myPlayer = await PlayerModel.findOne({
+      $or: [{ owner: req.userId }, { userId: req.userId }],
+    }).select('_id').lean();
+    const myPlayerId = myPlayer?._id?.toString();
+    const isMember = !!myPlayerId &&
+      (group.members ?? []).some(member => member.toString() === myPlayerId);
+    const isOwner = group.owner.toString() === req.userId;
+    if (!isOwner && !isMember) return res.status(403).json({ message: 'Sin permiso' });
+
+    if (
+      req.spaceId &&
+      ((match.spaceId && match.spaceId.toString() !== req.spaceId) ||
+        (group.spaceId && group.spaceId.toString() !== req.spaceId))
+    ) {
+      return res.status(404).json({ message: 'Match no encontrado' });
+    }
+
+    return res.json({
+      ...match.toObject(),
+      canEdit: match.owner.toString() === req.userId,
+      isOwnerMatch: match.owner.toString() === req.userId,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error obteniendo match', error: (err as Error).message });
+  }
+}
+
 /* -------------------------------- addParticipant ------------------------------- */
 
 export async function addParticipant(req: Request, res: Response) {

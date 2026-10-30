@@ -11,6 +11,7 @@ router.post('/', requireAuth, ctrl.createMatch);
 
 // Listar matches de un grupo
 router.get('/group/:id', requireAuth, ctrl.listMatchesByGroup);
+router.get('/:id', requireAuth, ctrl.getMatch);
 
 // Operaciones sobre un match puntual
 router.post('/:id/participants', requireAuth, enforceOwnership(Match, 'id'), ctrl.addParticipant);
